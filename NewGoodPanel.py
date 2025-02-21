@@ -86,6 +86,15 @@ class SABREGUI(tk.Tk):
         # Injection Time
         self._create_advanced_input(self.advanced_frame, "Injection Time", "injection_time_entry")
 
+        # Bubbling Time
+        self._create_advanced_input(self.advanced_frame, "Bubbling Time", "bubbling_time_entry")
+
+        # Transfer Time
+        self._create_advanced_input(self.advanced_frame, "Transfer Time", "transfer_time_entry")
+
+        # Recycle Time
+        self._create_advanced_input(self.advanced_frame, "Recycle Time", "recycle_time_entry")
+
         # Additional Buttons
         self._create_advanced_button("Save Parameters")
         self._create_advanced_button("Load Parameters")
@@ -175,7 +184,9 @@ class SABREGUI(tk.Tk):
             if self.virtual_panel and self.virtual_panel.winfo_exists():
                 # Update first circle to HIGH state when activating
                 self.virtual_panel.update_circle_state(0, True)
-            # Continue with experiment activation
+                # Start the activation sequence in the virtual panel
+                self.virtual_panel.start_sequence()
+
 
     def show_error_popup(self, missing_params):
         error_message = "Missing the following parameters:\n" + "\n".join(missing_params)
@@ -192,24 +203,39 @@ class SABREGUI(tk.Tk):
         tk.Label(error_popup, text=error_message, font=("Arial", 12), justify="left").pack()
 
     def start_experiment(self):
+        # Call start_sequence_bubbling instead of having a separate implementation
         if self.virtual_panel and self.virtual_panel.winfo_exists():
             # Example: Set circles 2 and 3 to HIGH state when starting
             self.virtual_panel.update_circle_state(1, True)
             self.virtual_panel.update_circle_state(2, True)
-        # Add your start experiment logic here
+    
+        # Start the bubbling sequence instead of a custom start sequence
+        if self.virtual_panel and self.virtual_panel.winfo_exists():
+            self.virtual_panel.start_sequence_bubbling()
 
     def scram_experiment(self):
         if self.virtual_panel and self.virtual_panel.winfo_exists():
             # Set all circles to LOW state when scramming
             for i in range(8):
                 self.virtual_panel.update_circle_state(i, False)
-        # Immediately stop the DIO signal
+            # Load "Initial_State" configuration to the virtual panel
+            self.virtual_panel.load_config("Initial_State")
+
+        # Immediately stop the DIO signal (reset DAQ to initial state)
         with nidaqmx.Task() as task:
             task.do_channels.add_do_chan(DIO_CHANNEL)
-            task.write(False)
+            task.write(False)  # Reset the DIO line to LOW
+
+        # Stop the experiment sequence
+        if self.virtual_panel and self.virtual_panel.running:
+            self.virtual_panel.running = False
+
         # Reset timer and state
         self.timer_label.config(text="00:00")
         self.state_label.config(text="State: Idle")
+
+        # Reset other UI elements to "Initial_State" or equivalent, as needed
+        # (For example, resetting all parameter fields or UI controls back to their initial state)
 
 
 # Define the directory where the configuration files are stored
@@ -231,11 +257,12 @@ class VirtualTestingPanel(tk.Toplevel):
         self.circle_frame = tk.Frame(self)
         self.circle_frame.pack(pady=20)
         self.circles = {f"DIO{i+1}": self._create_circle(self.circle_frame, i) for i in range(8)}
-        
+
         # Control buttons
         button_frame = tk.Frame(self)
         button_frame.pack(pady=10)
-        ttk.Button(button_frame, text="Start Sequence", command=self.start_sequence).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Test Activation Sequence", command=self.start_sequence).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Test Bubbling Sequence", command=self.start_sequence_bubbling).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Stop", command=self.stop_sequence).pack(side=tk.LEFT, padx=5)
         
         self.running = False
@@ -247,7 +274,7 @@ class VirtualTestingPanel(tk.Toplevel):
         canvas = tk.Canvas(container, width=50, height=50)
         canvas.pack()
         circle = canvas.create_oval(5, 5, 45, 45, fill='red') 
-        dio_label = tk.Label(container, text=f"DIO{index + 1}")
+        dio_label = tk.Label(container, text=f"Valve {index + 1}")
         dio_label.pack()
         return canvas, circle
 
@@ -263,24 +290,44 @@ class VirtualTestingPanel(tk.Toplevel):
 
     def load_config(self, state):
         """Load and apply configuration from file."""
+        # Mapping of configuration file names to user-friendly state names
+        state_mapping = {
+            "Activation_State_Final": "Activating the Sample",
+            "Activation_State_Initial": "Activating the Sample",
+            "Bubbling_State_Final": "Bubbling the Sample",
+            "Bubbling_State_Initial": "Bubbling the Sample",
+            "Degassing": "Degassing Solution",
+            "Recycle": "Recycling Solution",
+            "Injection_State_Start": "Injecting the Sample",
+            "Transfer_Final": "Transferring the Sample",
+            "Transfer_Initial": "Transferring the Sample",
+            "Initial_State": "Idle",
+        }
+
         try:
-            config_file = os.path.join(CONFIG_DIR, f"{state.replace(' ', '_')}.json")
+            # Non-human-readable config file path (original file name)
+            config_file = os.path.join(CONFIG_DIR, f"{state}.json")
+            
             if not os.path.exists(config_file):
                 print(f"Configuration file not found: {config_file}")
                 return False
-                
+
             with open(config_file, "r") as file:
                 config_data = json.load(file)
-            
-            # Update the state label
-            self.state_label.config(text=f"Current State: {state}")
-            
+
+            # Update the state label in SABREGUI with the human-readable state
+            human_readable_state = state_mapping.get(state, "Unknown State")
+            self.parent.state_label.config(text=f"State: {human_readable_state}")
+
+            # Also update the non-human-readable state in the Virtual Testing Panel
+            self.state_label.config(text=f"Current State: {state}")  # Non-human-readable state
+
             # Update DIO states
             dio_states = {f"DIO{i+1}": config_data.get(f"DIO{i+1}", "LOW").upper() == "HIGH"
                           for i in range(8)}
             for dio, is_active in dio_states.items():
                 self.update_circle_state(dio, is_active)
-            
+
             return True
 
         except Exception as error:
@@ -301,7 +348,6 @@ class VirtualTestingPanel(tk.Toplevel):
                 activation_duration = float(self.parent.activation_time_entry.get())
 
                 state_sequence = [
-                    ("Injection_State_Start", 0),
                     ("Initial_State", valve_duration),
                     ("Injection_State", injection_duration),
                     ("Degassing", degassing_duration),
@@ -317,11 +363,50 @@ class VirtualTestingPanel(tk.Toplevel):
                         start_time = time.time()
                         while time.time() - start_time < duration and self.running:
                             time.sleep(0.1)
+            
             except Exception as error:
                 print(f"Error in experiment sequence: {error}")
             finally:
                 self.running = False
         threading.Thread(target=run_experiment_sequence, daemon=True).start()
+
+    def start_sequence_bubbling(self):
+        """Start the experiment sequence"""
+        if self.running:
+            return
+        self.running = True
+        def run_experiment_sequence_bubbling():
+            try:
+                # Retrieve timing values from parent entries
+                valve_duration = float(self.parent.valve_time_entry.get())
+                bubbling_time = float(self.parent.bubbling_time_entry.get())
+                transfer_time = float(self.parent.transfer_time_entry.get())
+                recycle_time = float(self.parent.recycle_time_entry.get())
+
+                state_sequence = [
+                    ("Bubbling_State_Initial", bubbling_time),
+                    ("Bubbling_State_Final", valve_duration),
+                    ("Transfer_Initial", valve_duration),
+                    ("Transfer_Final", valve_duration),
+                    ("Recycle_Initial", transfer_time),
+                    ("Recycle_Final", recycle_time),
+                    ("Initial_State", None)
+                ]
+
+                for state, duration in state_sequence:
+                    if not self.running:
+                        break
+                    if self.load_config(state) and duration:
+                        start_time = time.time()
+                        while time.time() - start_time < duration and self.running:
+                            time.sleep(0.1)
+
+            except Exception as error:
+                print(f"Error in experiment sequence: {error}")
+            finally:
+                self.running = False
+        threading.Thread(target=run_experiment_sequence_bubbling, daemon=True).start()
+
 
     def stop_sequence(self):
         """Stop the running sequence"""

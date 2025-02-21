@@ -212,10 +212,8 @@ class SABREGUI(tk.Tk):
         self.state_label.config(text="State: Idle")
 
 
-
 # Define the directory where the configuration files are stored
 CONFIG_DIR = r"C:\Users\walsw\SABRE Panel Program\config_files_SABRE"
-
 
 class VirtualTestingPanel(tk.Toplevel):
     def __init__(self, parent):
