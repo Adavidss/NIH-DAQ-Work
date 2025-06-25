@@ -1,3 +1,0 @@
-"""
-SABRE GUI Panel Modules
-"""
