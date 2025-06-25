@@ -1,0 +1,42 @@
+{
+    "default": {
+        "background": "#e0e0e0",
+        "status_bar": "#e0e0e0",
+        "button_frame": "#e0e0e0",
+        "label_frame": "#f0f0f0",
+        "entry_frame": "#ffffff",
+        "notebook_container": "#e0e0e0",
+        "tab_background": "#f0f0f0",
+        "plot_background": "#ffffff"
+    },
+    "dark_mode": {
+        "background": "#2b2b2b",
+        "status_bar": "#1e1e1e",
+        "button_frame": "#3c3c3c",
+        "label_frame": "#404040",
+        "entry_frame": "#505050",
+        "notebook_container": "#2b2b2b",
+        "tab_background": "#3c3c3c",
+        "plot_background": "#1e1e1e"
+    },
+    "light_mode": {
+        "background": "#f5f5f5",
+        "status_bar": "#ffffff",
+        "button_frame": "#ffffff",
+        "label_frame": "#ffffff",
+        "entry_frame": "#ffffff",
+        "notebook_container": "#f5f5f5",
+        "tab_background": "#ffffff",
+        "plot_background": "#ffffff"
+    },
+    "blue_theme": {
+        "background": "#e6f3ff",
+        "status_bar": "#cce7ff",
+        "button_frame": "#b3daff",
+        "label_frame": "#e6f3ff",
+        "entry_frame": "#ffffff",
+        "notebook_container": "#e6f3ff",
+        "tab_background": "#f0f8ff",
+        "plot_background": "#ffffff"
+    }
+}

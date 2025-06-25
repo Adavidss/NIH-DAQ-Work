@@ -19,26 +19,10 @@ import numpy as np
 # Set up path for nested programs
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Nested_Programs"))
 
-# Import of controller classes
-from Nested_Programs.WindowManager import WindowManager
-from Nested_Programs.PresetController import PresetController
-from Nested_Programs.WaveformController import WaveformController
-from Nested_Programs.CountdownController import CountdownController
-from Nested_Programs.WidgetSynchronizer import WidgetSynchronizer
-from Nested_Programs.TooltipManager import TooltipManager
-from Nested_Programs.ThemeManager import ThemeManager
-from Nested_Programs.DAQController import DAQController
-from Nested_Programs.StateManager import StateManager
-from Nested_Programs.PlotController import PlotController
-from Nested_Programs.UIManager import UIManager
-from Nested_Programs.MethodManager import MethodManager
-from Nested_Programs.TimerWidget import TimerWidget
-
 # Import utility modules
 from Nested_Programs.Utility_Functions import (
     build_composite_waveform,
-    ensure_default_state_files,
-    get_value as convert_value
+    ensure_default_state_files
 )
 
 from Nested_Programs.Constants_Paths import (
@@ -61,8 +45,8 @@ from Nested_Programs.ParameterSection import ParameterSection
 from Nested_Programs.PresetManager import PresetManager
 from Nested_Programs.VisualAspects import VisualAspects
 
-# Import presets directory path from constants
-from Nested_Programs.Constants_Paths import PRESETS_DIR
+# Define presets directory path
+PRESETS_DIR = r"C:\Users\walsworthlab\Desktop\SABRE Program\config_files_SABRE\PolarizationMethods\Presets"
 
 try:
     # Initialize state files
@@ -74,6 +58,397 @@ except Exception as e:
     print(f"Error creating config directory and files: {e}")
     sys.exit(1)
 
+# --- Core Controller Classes ---
+
+class DAQController:
+    """Handles all DAQ communication"""
+    def send_digital(self, digital_outputs):
+        try:
+            import nidaqmx
+            with nidaqmx.Task() as task:
+                channels = ','.join(digital_outputs.keys())
+                task.do_channels.add_do_chan(channels)
+                signals = [1 if digital_outputs[k] else 0 for k in digital_outputs]
+                task.write(signals)
+        except Exception as e:
+            print(f"Error sending digital signals: {e}")
+
+    def send_analog(self, analog_outputs):
+        try:
+            import nidaqmx
+            for channel, value in analog_outputs.items():
+                with nidaqmx.Task() as task:
+                    task.ao_channels.add_ao_voltage_chan(f"Dev1/{channel}", min_val=-10.0, max_val=10.0)
+                    task.write(value)
+        except Exception as e:
+            print(f"Error sending analog signals: {e}")
+
+class StateManager:
+    """Manages system states and configurations"""
+    def __init__(self, config_dir):
+        self.config_dir = config_dir
+        
+    def load(self, state_name):
+        try:
+            config_file = os.path.join(self.config_dir, f"{state_name}.json")
+            if os.path.exists(config_file):
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                return config
+            else:
+                print(f"Config file not found for state: {state_name}")
+                return None
+        except Exception as e:
+            print(f"Error loading config for state {state_name}: {e}")
+            return None
+
+class TimerController:
+    """Handles all timer functionality"""
+    def __init__(self, parent):
+        self.parent = parent
+        self.countdown_running = False
+        self.countdown_end_time = None
+        self.app_launch_time = time.time()
+        
+    def start_countdown(self, duration):
+        """Start a countdown timer for the given duration in seconds."""
+        if duration is None or duration <= 0:
+            return
+        self.countdown_end_time = time.time() + duration
+        self.countdown_running = True
+        self._update_countdown()
+
+    def _update_countdown(self):
+        """Update the countdown timer label."""
+        if not hasattr(self.parent, "timer_label") or not self.parent.timer_label.winfo_exists():
+            return
+        if self.countdown_end_time is None:
+            return
+        remaining = int(self.countdown_end_time - time.time())
+        if remaining < 0:
+            remaining = 0
+        hours, remainder = divmod(remaining, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.parent.timer_label.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        if remaining > 0:
+            self.parent.after(1000, self._update_countdown)
+        else:
+            self.countdown_running = False
+
+    def start_controls_countdown(self, duration):
+        """Controls countdown removed - no operation"""
+        pass
+
+    def _update_controls_countdown(self):
+        """Controls countdown removed - no operation"""
+        pass
+
+    def update_elapsed_timer(self):
+        """Update elapsed time since app start"""
+        if not hasattr(self.parent, "timer_label") or not self.parent.timer_label.winfo_exists():
+            return
+        elapsed = int(time.time() - self.app_launch_time)
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.parent.timer_label.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        self.parent.after(1000, self.update_elapsed_timer)
+
+class PlotController:
+    """Handles all plotting operations"""
+    def __init__(self, parent):
+        self.parent = parent
+        self.main_fig = None
+        self.main_ax = None
+        self.main_canvas = None
+        self.field_fig = None
+        self.field_ax = None
+        self.field_canvas = None
+        self.waveform_visible = True
+        
+        # Live plotting variables
+        self.line = None
+        self.plotting_active = False
+        
+    def initialize_plots(self):
+        """Initialize plot components if they exist"""
+        try:
+            if self.main_ax is not None:
+                self.main_ax.clear()
+                self.main_ax.set_xlabel("Time (s)")
+                self.main_ax.set_ylabel("Voltage (V)")
+                self.main_ax.set_title("Live Waveform")
+                self.main_ax.grid(True, alpha=0.3)
+                if self.main_canvas is not None:
+                    self.main_canvas.draw()
+        except Exception as e:
+            print(f"Error initializing plots: {e}")
+            
+    def start_live_plotting(self):
+        """Start live waveform plotting"""
+        try:
+            self.plotting_active = True
+            self.parent.voltage_data = []
+            self.parent.time_data = []
+            self.parent.start_time = time.time()
+            self.line = None  # Reset line
+            
+            if self.main_ax is not None:
+                self.main_ax.clear()
+                self.main_ax.set_xlabel("Time (s)")
+                self.main_ax.set_ylabel("Voltage (V)")
+                self.main_ax.set_title("Live Waveform - Recording")
+                self.main_ax.grid(True, alpha=0.3)
+                if self.main_canvas is not None:
+                    self.main_canvas.draw()
+                    
+            print("Live plotting started")
+        except Exception as e:
+            print(f"Error starting live plotting: {e}")
+            
+    def update_live_plot(self, voltage, timestamp=None):
+        """Update the live plot with new voltage data"""
+        if not self.plotting_active:
+            return
+            
+        try:
+            if timestamp is None:
+                timestamp = time.time()
+                
+            # Calculate relative time
+            if self.parent.start_time is None:
+                self.parent.start_time = timestamp
+            relative_time = timestamp - self.parent.start_time
+            
+            # Add data to buffers
+            self.parent.voltage_data.append(voltage)
+            self.parent.time_data.append(relative_time)
+            
+            # Limit buffer size for performance
+            max_points = 1000
+            if len(self.parent.voltage_data) > max_points:
+                self.parent.voltage_data = self.parent.voltage_data[-max_points:]
+                self.parent.time_data = self.parent.time_data[-max_points:]
+            
+            # Update plot
+            if self.main_ax is not None and len(self.parent.time_data) > 0:
+                if self.line is None:
+                    plot_result = self.main_ax.plot(self.parent.time_data, self.parent.voltage_data, 'b-', linewidth=1)
+                    if plot_result:
+                        self.line = plot_result[0]
+                else:
+                    self.line.set_data(self.parent.time_data, self.parent.voltage_data)
+                
+                # Update axis limits
+                if len(self.parent.time_data) > 1:
+                    self.main_ax.set_xlim(min(self.parent.time_data), max(self.parent.time_data))
+                    
+                if len(self.parent.voltage_data) > 0:
+                    v_min, v_max = min(self.parent.voltage_data), max(self.parent.voltage_data)
+                    padding = 0.1 * max(0.1, v_max - v_min)
+                    self.main_ax.set_ylim(v_min - padding, v_max + padding)
+                
+                if self.main_canvas is not None:
+                    self.main_canvas.draw_idle()
+                    
+        except Exception as e:
+            print(f"Error updating live plot: {e}")
+            
+    def stop_live_plotting(self):
+        """Stop live waveform plotting"""
+        try:
+            self.plotting_active = False
+            if self.main_ax is not None:
+                self.main_ax.set_title("Live Waveform")
+                if self.main_canvas is not None:
+                    self.main_canvas.draw()
+            print("Live plotting stopped")
+        except Exception as e:
+            print(f"Error stopping live plotting: {e}")
+
+    def plot_waveform_buffer(self, buf, sr):
+        """Plot waveform buffer for preview"""
+        try:
+            if self.main_ax is not None and self.main_canvas is not None:
+                self.main_ax.clear()
+                time_axis = np.arange(len(buf)) / sr
+                self.main_ax.plot(time_axis, buf, 'b-', linewidth=1)
+                self.main_ax.set_xlabel("Time (s)")
+                self.main_ax.set_ylabel("Voltage (V)")
+                self.main_ax.set_title("Polarization Method Waveform")
+                self.main_ax.grid(True, alpha=0.3)
+                
+                # Force multiple canvas updates to ensure visibility
+                self.main_canvas.draw()
+                self.main_canvas.draw_idle()
+                self.main_canvas.flush_events()
+                
+                print(f"Plotted waveform: {len(buf)} samples at {sr} Hz")
+        except Exception as e:
+            print(f"Error plotting waveform buffer: {e}")
+            
+    def reset_waveform_plot(self):
+        """Reset the waveform plot"""
+        try:
+            if self.main_ax is not None:
+                self.main_ax.clear()
+                self.main_ax.set_xlabel("Time (s)")
+                self.main_ax.set_ylabel("Voltage (V)")
+                self.main_ax.set_title("Waveform Display")
+                self.main_ax.grid(True, alpha=0.3)
+                if self.main_canvas is not None:
+                    self.main_canvas.draw()
+        except Exception as e:
+            print(f"Error resetting waveform plot: {e}")
+            
+    def toggle_waveform_plot(self):
+        """Toggle waveform plot visibility"""
+        try:
+            self.waveform_visible = not self.waveform_visible
+            if self.main_canvas is not None:
+                if self.waveform_visible:
+                    self.main_canvas.get_tk_widget().pack(fill="both", expand=True)
+                else:
+                    self.main_canvas.get_tk_widget().pack_forget()
+            print(f"Waveform plot visibility: {self.waveform_visible}")
+        except Exception as e:
+            print(f"Error toggling waveform plot: {e}")
+
+class UIManager:
+    """Handles UI creation and styling"""
+    def __init__(self, parent):
+        self.parent = parent
+        
+    def create_control_button(self, parent, text, color, command):
+        """Create a control button with consistent styling"""
+        button = tk.Button(parent, text=text, 
+                          command=command,
+                          font=('Arial', 10, 'bold'),
+                          width=12, height=2,
+                          relief="raised", bd=2)
+        
+        # Set color scheme based on button type
+        color_schemes = {
+            "green": {"bg": "#4CAF50", "fg": "white", "activebackground": "#45a049"},
+            "blue": {"bg": "#2196F3", "fg": "white", "activebackground": "#1976D2"},
+            "orange": {"bg": "#FF9800", "fg": "white", "activebackground": "#F57C00"},
+            "red": {"bg": "#F44336", "fg": "white", "activebackground": "#D32F2F"}
+        }
+        
+        if color in color_schemes:
+            button.config(**color_schemes[color])
+        
+        button.pack(side="left", padx=5, pady=2)
+        return button
+        
+    def show_error_popup(self, missing_params):
+        """Show error popup for missing parameters"""
+        if missing_params:
+            error_msg = "Missing required parameters:\n" + "\n".join(f"• {param}" for param in missing_params)
+            messagebox.showwarning("Missing Parameters", error_msg)
+        
+    def create_quadrant_button(self, parent, text, color, command, row, col):
+        """Create a quadrant experiment control button with consistent styling"""
+        button = tk.Button(parent, text=text, 
+                          command=command,
+                          font=('Arial', 8, 'bold'),
+                          relief="raised", bd=3,
+                          width=8, height=1)
+        
+        # Hard-coded button palette
+        color_schemes = {
+            "Activate": {"bg": "#2E7D32", "fg": "white", "activebackground": "#2E7D32"},
+            "Start": {"bg": "#1565C0", "fg": "white", "activebackground": "#1565C0"},
+            "Test Field": {"bg": "#EF6C00", "fg": "white", "activebackground": "#EF6C00"},
+            "SCRAM": {"bg": "#B71C1C", "fg": "white", "activebackground": "#B71C1C"}
+        }
+        
+        if text in color_schemes:
+            button.config(**color_schemes[text])
+            
+        button.grid(row=row, column=col, sticky="nsew", padx=3, pady=3)
+        return button
+
+class MethodManager:
+    """Handles polarization method selection and management"""
+    def __init__(self, parent):
+        self.parent = parent
+        self.polarization_method_file = None
+        self.polarization_methods_dir = r"C:\Users\walsworthlab\Desktop\SABRE Program\config_files_SABRE\PolarizationMethods"
+        self.selected_method_var = tk.StringVar(value="Select method...")
+        self.polarization_method_var = tk.StringVar(value="Select method...")
+        
+    def load_polarization_methods_from_directory(self):
+        """Load all JSON polarization method files from the specified directory"""
+        try:
+            # Create directory if it doesn't exist
+            if not os.path.exists(self.polarization_methods_dir):
+                os.makedirs(self.polarization_methods_dir)
+                return ["Select method..."]
+            
+            # Get all JSON files in the directory
+            json_files = []
+            for file in os.listdir(self.polarization_methods_dir):
+                if file.endswith('.json'):
+                    json_files.append(file)
+            
+            # Sort alphabetically and add default option
+            json_files.sort()
+            methods = ["Select method..."] + json_files
+            
+            print(f"Found {len(json_files)} polarization method files in {self.polarization_methods_dir}")
+            return methods
+            
+        except Exception as e:
+            print(f"Error loading polarization methods from directory: {e}")
+            return ["Select method..."]
+            
+    def on_method_selected(self, event=None):
+        """Handle method selection from combobox"""
+        try:
+            selected_method = self.selected_method_var.get()
+            if selected_method and selected_method != "Select method...":
+                self.polarization_method_file = os.path.join(self.polarization_methods_dir, selected_method)
+                print(f"Selected polarization method: {self.polarization_method_file}")
+                
+                # Update the live waveform plot in the main tab
+                self.parent._refresh_live_waveform()
+        except Exception as e:
+            print(f"Error handling method selection: {e}")
+            
+    def select_polarization_method(self):
+        """Open file dialog to select polarization method"""
+        file_path = filedialog.askopenfilename(
+            initialdir=self.polarization_methods_dir,
+            title="Select Polarization Method",
+            filetypes=[("JSON files", "*.json")]
+        )
+        if file_path:
+            self.polarization_method_file = file_path
+            filename = os.path.basename(file_path)
+            self.selected_method_var.set(filename)
+            print(f"Selected polarization method: {file_path}")
+            
+            # Update the live waveform plot in the main tab
+            self.parent._refresh_live_waveform()
+            
+    def compute_polarization_duration(self):
+        """Return the duration (s) of the waveform described by the currently selected polarization-method JSON file"""
+        if not self.parent.polarization_method_file:
+            return 0.0
+        try:
+            with open(self.parent.polarization_method_file, "r") as f:
+                cfg = json.load(f)
+
+            # Build the identical buffer the DAQ routine will output
+            if isinstance(cfg, dict) and cfg.get("type") == "SLIC_sequence":
+                buf, sr = build_composite_waveform(cfg)
+            else:
+                dc_offset = cfg.get("initial_voltage", 0.0)
+                buf, sr = build_composite_waveform(cfg["ramp_sequences"], dc_offset=dc_offset)
+            return len(buf) / sr
+        except Exception as e:
+            print(f"[Timer] duration-calc error: {e}")
+            return 0.0
 
 class TabManager:
     """Manages tab creation and organization"""
@@ -125,64 +500,31 @@ class TabManager:
         self.create_polarization_tab(pol_frame)
         print("Polarization Calculator tab created successfully")
         print("All tabs created successfully!")
-        
-        # Initialize tooltips for all tabs after creation
-        self.parent.after(100, self._initialize_all_tooltips)
-        
-    def _initialize_all_tooltips(self):
-        """Initialize tooltips for all embedded panels after they're fully created"""
-        try:
-            # Add tooltips to Virtual Testing panel
-            if hasattr(self.parent, 'embedded_virtual_panel') and self.parent.embedded_virtual_panel:
-                self.parent._add_virtual_testing_tooltips(self.parent.embedded_virtual_panel)
-                
-            # Add tooltips to Full Flow System panel
-            if hasattr(self.parent, 'embedded_full_flow') and self.parent.embedded_full_flow:
-                self.parent._add_full_flow_tooltips(self.parent.embedded_full_flow)
-                
-            # Add tooltips to SLIC Control panel
-            if hasattr(self.parent, 'embedded_slic_panel') and self.parent.embedded_slic_panel:
-                self.parent._add_slic_control_tooltips(self.parent.embedded_slic_panel)
-                        
-            # Add tooltips to Polarization Calculator panel  
-            if hasattr(self.parent, 'embedded_polarization_panel') and self.parent.embedded_polarization_panel:
-                self.parent._add_polarization_calc_tooltips(self.parent.embedded_polarization_panel)
-                        
-            # Add tooltips to Analog Input/Output panels
-            if hasattr(self.parent, 'embedded_ai_panel') and self.parent.embedded_ai_panel:
-                self.parent._add_analog_input_tooltips(self.parent.embedded_ai_panel)
-                
-            if hasattr(self.parent, 'embedded_ao_panel') and self.parent.embedded_ao_panel:
-                self.parent._add_analog_output_tooltips(self.parent.embedded_ao_panel)
-                        
-        except Exception as e:
-            print(f"Error initializing tooltips: {e}")
-        
+    
     def create_main_tab(self, parent, detached=False):
         """Create the main control tab with key controls and previews"""
-        # Configure grid with different row weights to make boxes more compact
+        # Configure grid
         parent.columnconfigure((0, 1), weight=1, uniform="col")
-        parent.rowconfigure(0, weight=0)  # Top row shrinks to fit content
-        parent.rowconfigure(1, weight=1)  # Bottom row takes remaining space
+        parent.rowconfigure((0, 1), weight=1, uniform="row")
         
-        # General Configuration section (top-left) - compact
-        gen_cfg = ttk.LabelFrame(parent, text="General Configuration", padding="5")
-        gen_cfg.grid(row=0, column=0, sticky="ew", padx=2, pady=2)
+        # General Configuration section (top-left)
+        gen_cfg = ttk.LabelFrame(parent, text="General Configuration")
+        gen_cfg.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         self.create_general_params_preview(gen_cfg)
         
         # Waveform Live View (bottom-left)
         waveform_frame = ttk.LabelFrame(parent, text="Waveform Live View")
-        waveform_frame.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        waveform_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
         self.create_waveform_live_view_main(waveform_frame)
 
-        # Method Selection and Experiment Controls section (top-right) - compact
-        method_control_frame = ttk.LabelFrame(parent, text="Experimental Controls", padding="5")
-        method_control_frame.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        # Method Selection and Experiment Controls section (top-right)
+        method_control_frame = ttk.LabelFrame(parent, text="Experimental Controls")
+        method_control_frame.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
         self.create_method_and_control_section(method_control_frame)
         
         # Magnetic Field Live View (bottom-right)
         magnetic_frame = ttk.LabelFrame(parent, text="Magnetic Field Live View")
-        magnetic_frame.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
+        magnetic_frame.grid(row=1, column=1, sticky="nsew", padx=4, pady=4)
         self.create_magnetic_field_live_view_main(magnetic_frame)
     
     def create_advanced_tab(self, parent, detached=False):
@@ -211,25 +553,12 @@ class TabManager:
         
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        
+    
     def create_testing_tab(self, parent):
         """Create the testing tab with fully embedded testing panels"""
         # Create notebook for different testing panels
         testing_notebook = ttk.Notebook(parent)
         testing_notebook.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        # Add tooltip to the testing notebook itself
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            ToolTip(testing_notebook, 
-                   "TESTING ENVIRONMENT: Multiple testing interfaces for the SABRE system.\n"
-                   "• Virtual Testing: Visual valve control and system monitoring\n"
-                   "• Full Flow System: Complete flow path visualization\n"
-                   "• Analog Input: Real-time sensor data monitoring\n"
-                   "• Analog Output: Manual control of analog outputs", 
-                   parent=self.parent)
-        except Exception as e:
-            print(f"Error adding testing notebook tooltip: {e}")
         
         # Virtual Testing panel - Fully embedded
         vt_frame = ttk.Frame(testing_notebook)
@@ -239,7 +568,6 @@ class TabManager:
         try:
             self.parent.embedded_virtual_panel = VirtualTestingPanel(self.parent, embedded=True, container=vt_frame)
             self.parent.embedded_virtual_panel.pack(fill="both", expand=True)
-            
         except Exception as e:
             error_label = tk.Label(vt_frame, text=f"Virtual Testing Panel Error: {e}", 
                                  fg="red", font=("Arial", 12))
@@ -252,7 +580,6 @@ class TabManager:
         try:
             self.parent.embedded_full_flow = FullFlowSystem(self.parent, embedded=True)
             self.parent.embedded_full_flow.pack(fill="both", expand=True, in_=ff_frame)
-            
         except Exception as e:
             error_label = tk.Label(ff_frame, text=f"Full Flow System Error: {e}", 
                                  fg="red", font=("Arial", 12))
@@ -264,64 +591,48 @@ class TabManager:
         ai_panel = AnalogInputPanel(ai_frame, embedded=True)
         ai_panel.pack(fill="both", expand=True)
         
-        # Store reference for tooltip initialization
-        self.parent.embedded_ai_panel = ai_panel
-        
         ao_frame = ttk.Frame(testing_notebook)
         testing_notebook.add(ao_frame, text="Analog Output")
         ao_panel = AnalogOutputPanel(ao_frame, embedded=True)
         ao_panel.pack(fill="both", expand=True)
-        
-        # Store reference for tooltip initialization
-        self.parent.embedded_ao_panel = ao_panel
-        
+    
     def create_slic_tab(self, parent):
         """Create the SLIC control tab"""
         try:
             slic_panel = SLICSequenceControl(parent, embedded=True)
             slic_panel.pack(fill="both", expand=True)
-            
-            # Store reference for tooltip initialization
-            self.parent.embedded_slic_panel = slic_panel
-            
         except Exception as e:
             error_label = tk.Label(parent, text=f"SLIC Control Error: {e}", 
                                  fg="red", font=("Arial", 12))
             error_label.pack(expand=True)
-            
+    
     def create_polarization_tab(self, parent):
         """Create the polarization calculator tab"""
         try:
             pol_panel = PolarizationApp(parent, embedded=True)
             pol_panel.pack(fill="both", expand=True)
-            
-            # Store reference for tooltip initialization
-            self.parent.embedded_polarization_panel = pol_panel
-            
         except Exception as e:
             error_label = tk.Label(parent, text=f"Polarization Calculator Error: {e}", 
                                  fg="red", font=("Arial", 12))
             error_label.pack(expand=True)
-            
+    
     def create_waveform_live_view_main(self, parent):
         """Create the waveform live view for the Main tab"""
         # Create a frame for the waveform section
-        waveform_container = tk.Frame(parent, bg=self.parent.theme_manager.color("frame_bg"))
-        waveform_container.pack(fill="both", expand=True, padx=2, pady=2)
+        waveform_container = tk.Frame(parent)
+        waveform_container.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Create header frame for title and toggle button
-        header_frame = tk.Frame(waveform_container, bg=self.parent.theme_manager.color("frame_bg"))
-        header_frame.pack(fill="x", pady=(0, 2))
+        header_frame = tk.Frame(waveform_container)
+        header_frame.pack(fill="x", pady=(0, 5))
 
         # Add title and refresh button side by side
-        tk.Label(header_frame, text="Live Waveform", font=("Arial", 10, "bold"), 
-                bg=self.parent.theme_manager.color("label_bg"), 
-                fg=self.parent.theme_manager.color("label_fg")).pack(side="left")
+        tk.Label(header_frame, text="Live Waveform", font=("Arial", 10, "bold")).pack(side="left")
         refresh_btn = ttk.Button(header_frame, text="Refresh", command=self.parent._refresh_live_waveform)
-        refresh_btn.pack(side="right", padx=1)
+        refresh_btn.pack(side="right", padx=2)
 
         # Create the plot container frame
-        plot_container = tk.Frame(waveform_container, bg=self.parent.theme_manager.color("frame_bg"), height=120)
+        plot_container = tk.Frame(waveform_container, bg="black", height=120)
         plot_container.pack(fill="both", expand=True)
         plot_container.pack_propagate(False)
 
@@ -332,16 +643,13 @@ class TabManager:
             
             # Create smaller figure for main tab
             fig, ax = plt.subplots(figsize=(4, 2))
-            fig.patch.set_facecolor(self.parent.theme_manager.color("plot_bg"))
-            ax.set_facecolor(self.parent.theme_manager.color("plot_bg"))
-            ax.tick_params(colors=self.parent.theme_manager.color("fg"), labelsize=8)
-            ax.set_xlabel("Time (s)", color=self.parent.theme_manager.color("fg"), fontsize=8)
-            ax.set_ylabel("Voltage (V)", color=self.parent.theme_manager.color("fg"), fontsize=8)
-            ax.set_title("Live Waveform", color=self.parent.theme_manager.color("fg"), fontsize=9)
-            ax.grid(True, color=self.parent.theme_manager.color("grid_color"), alpha=0.3)
-            # Set spine colors
-            for spine in ax.spines.values():
-                spine.set_color(self.parent.theme_manager.color("fg"))
+            fig.patch.set_facecolor('black')
+            ax.set_facecolor('black')
+            ax.tick_params(colors='lime', labelsize=8)
+            ax.set_xlabel("Time (s)", color='lime', fontsize=8)
+            ax.set_ylabel("Voltage (V)", color='lime', fontsize=8)
+            ax.set_title("Live Waveform", color='lime', fontsize=9)
+            ax.grid(True, color='darkgreen', alpha=0.3)
             
             # Store figure reference for main tab
             self.parent.main_fig = fig
@@ -359,9 +667,6 @@ class TabManager:
             self.parent.plot_controller.main_ax = ax  
             self.parent.plot_controller.main_canvas = canvas
             
-            # Add tooltip to waveform plot
-            self._add_plot_tooltip(canvas_widget, "waveform")
-            
             # Plot initial waveform if method is already selected
             self.parent.after(100, self.parent._refresh_live_waveform)
                 
@@ -369,34 +674,29 @@ class TabManager:
             # Fallback if matplotlib not available
             fallback_label = tk.Label(plot_container, 
                                     text="Waveform Display\n(Matplotlib required)", 
-                                    fg=self.parent.theme_manager.color("label_fg"), 
-                                    bg=self.parent.theme_manager.color("label_bg"), 
-                                    font=("Arial", 9))
+                                    fg="lime", bg="black", font=("Arial", 9))
             fallback_label.pack(expand=True)
 
     def create_magnetic_field_live_view_main(self, parent):
         """Create the magnetic field live view for the Main tab"""
         # Create a frame for the magnetic field section
-        field_container = tk.Frame(parent, bg=self.parent.theme_manager.color("frame_bg"))
-        field_container.pack(fill="both", expand=True, padx=2, pady=2)
+        field_container = tk.Frame(parent)
+        field_container.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Create header frame
-        header_frame = tk.Frame(field_container, bg=self.parent.theme_manager.color("frame_bg"))
-        header_frame.pack(fill="x", pady=(0, 2))
+        header_frame = tk.Frame(field_container)
+        header_frame.pack(fill="x", pady=(0, 5))
 
         # Add title
-        tk.Label(header_frame, text="Live Field", font=("Arial", 10, "bold"), 
-                bg=self.parent.theme_manager.color("label_bg"),
-                fg=self.parent.theme_manager.color("label_fg")).pack(side="left")
+        tk.Label(header_frame, text="Live Field", font=("Arial", 10, "bold")).pack(side="left")
         
         # Current reading display
         self.parent.field_value_label = tk.Label(header_frame, text="0.0 mT", 
-                                         font=("Arial", 9, "bold"), fg="blue", 
-                                         bg=self.parent.theme_manager.color("label_bg"))
+                                         font=("Arial", 9, "bold"), fg="blue")
         self.parent.field_value_label.pack(side="right")
 
         # Create the display container
-        display_container = tk.Frame(field_container, bg=self.parent.theme_manager.color("frame_bg"), height=120)
+        display_container = tk.Frame(field_container, bg="darkblue", height=120)
         display_container.pack(fill="both", expand=True)
         display_container.pack_propagate(False)
 
@@ -407,16 +707,13 @@ class TabManager:
             
             # Create smaller figure for field monitoring
             fig, ax = plt.subplots(figsize=(4, 2))
-            fig.patch.set_facecolor(self.parent.theme_manager.color("plot_bg"))
-            ax.set_facecolor(self.parent.theme_manager.color("plot_bg"))
-            ax.tick_params(colors=self.parent.theme_manager.color("fg"), labelsize=8)
-            ax.set_xlabel("Time (s)", color=self.parent.theme_manager.color("fg"), fontsize=8)
-            ax.set_ylabel("Magnetic Field (mT)", color=self.parent.theme_manager.color("fg"), fontsize=8)
-            ax.set_title("Live Magnetic Field", color=self.parent.theme_manager.color("fg"), fontsize=9)
-            ax.grid(True, color=self.parent.theme_manager.color("grid_color"), alpha=0.3)
-            # Set spine colors
-            for spine in ax.spines.values():
-                spine.set_color(self.parent.theme_manager.color("fg"))
+            fig.patch.set_facecolor('darkblue')
+            ax.set_facecolor('darkblue')
+            ax.tick_params(colors='yellow', labelsize=8)
+            ax.set_xlabel("Time (s)", color='yellow', fontsize=8)
+            ax.set_ylabel("Field (mT)", color='yellow', fontsize=8)
+            ax.set_title("Magnetic Field Monitor", color='yellow', fontsize=9)
+            ax.grid(True, color='orange', alpha=0.3)
             
             # Store figure reference for field monitoring
             self.parent.field_fig = fig
@@ -433,180 +730,91 @@ class TabManager:
             # Store canvas reference
             self.parent.field_canvas = canvas
             self.parent.plot_controller.field_canvas = canvas
-            
-            # Add tooltip to field plot
-            self._add_plot_tooltip(canvas_widget, "field")
                 
         except ImportError:
             # Fallback if matplotlib not available
             fallback_label = tk.Label(display_container, 
                                     text="Magnetic Field Monitor\n(Matplotlib required)", 
-                                    fg=self.parent.theme_manager.color("label_fg"), 
-                                    bg=self.parent.theme_manager.color("label_bg"), 
-                                    font=("Arial", 9))
+                                    fg="yellow", bg="darkblue", font=("Arial", 9))
             fallback_label.pack(expand=True)
-            
+
     def create_method_and_control_section(self, parent):
-        """Create merged method selection and experiment controls section - compact layout"""
+        """Create merged method selection and experiment controls section"""
         # Preset combobox at very top of Experimental Controls frame
         preset_combobox = ttk.Combobox(parent, 
                                       textvariable=self.parent.selected_preset_var,
-                                      state="readonly", width=25)
+                                          state="readonly", width=25)
         preset_combobox.bind("<<ComboboxSelected>>", self.parent.on_preset_selected_auto_fill)
-        preset_combobox.pack(fill="x", padx=5, pady=(0, 2))
+        preset_combobox.pack(fill="x", padx=4, pady=4)
         self.parent.preset_combobox = preset_combobox
         
-        # Three small buttons immediately under the combobox - more compact
-        presets_controls = tk.Frame(parent, bg=self.parent.theme_manager.color("frame_bg"))
-        presets_controls.pack(fill="x", padx=5, pady=(0, 2))
+        # Three small buttons immediately under the combobox
+        presets_controls = tk.Frame(parent)
+        presets_controls.pack(fill="x", padx=4, pady=2)
         
-        save_btn = ttk.Button(presets_controls, text="Save Preset", 
-                  command=self.parent.save_current_as_preset)
-        save_btn.pack(side="left", padx=(0, 1))
+        ttk.Button(presets_controls, text="Save Current as Preset", 
+                  command=self.parent.save_current_as_preset).pack(side="left", padx=2)
+        ttk.Button(presets_controls, text="Delete Preset", 
+                  command=self.parent.delete_selected_preset).pack(side="left", padx=2)
+        ttk.Button(presets_controls, text="Refresh Presets", 
+                  command=self.parent.refresh_preset_list).pack(side="left", padx=2)
         
-        delete_btn = ttk.Button(presets_controls, text="Delete", 
-                  command=self.parent.delete_selected_preset)
-        delete_btn.pack(side="left", padx=1)
+        # Add state and timer section
+        controls_status_frame = tk.Frame(parent)
+        controls_status_frame.pack(fill="x", padx=4, pady=4)
+        ttk.Label(controls_status_frame, textvariable=self.parent.controls_state_var, 
+                  font=("Arial", 10, "bold"), foreground="blue").pack(side="left", padx=(0, 10))
         
-        refresh_btn = ttk.Button(presets_controls, text="Refresh", 
-                  command=self.parent.refresh_preset_list)
-        refresh_btn.pack(side="left", padx=1)
-        
-        # Add tooltips to preset controls
-        self._add_preset_control_tooltips(preset_combobox, save_btn, delete_btn, refresh_btn)
-        
-        # Add state and timer section - improved layout with timer on right
-        controls_status_frame = tk.Frame(parent, bg=self.parent.theme_manager.color("frame_bg"))
-        controls_status_frame.pack(fill="x", padx=5, pady=(0, 2))
-        
-        # State label on the left - now shows current experiment state
-        self.parent.state_display_label = ttk.Label(controls_status_frame, 
-                                                   text="State: Idle", 
-                                                   font=("Arial", 12, "bold"), foreground="blue")
-        self.parent.state_display_label.pack(side="left", padx=(0, 5))
-        
-        # Add countdown timer on the right (fixed position)
+        # Add countdown timer (same implementation as SLIC_Control.py)
         self.parent.countdown_label = tk.Label(controls_status_frame, text="00:00.000", 
-                                             font=("Arial", 12, "bold"), foreground="#003366", 
-                                             bg=self.parent.theme_manager.color("label_bg"))
-        self.parent.countdown_label.pack(side="right", padx=(5, 0))
+                                             font=("Arial", 10, "bold"), foreground="#003366")
+        self.parent.countdown_label.pack(side="left")
         
-        # Create buttons frame for 2x2 grid layout - more compact
-        buttons_frame = tk.Frame(parent, bg=self.parent.theme_manager.color("frame_bg"))
-        buttons_frame.pack(fill="x", padx=5, pady=(0, 2))
+        # Create buttons frame for 2x2 grid layout
+        buttons_frame = tk.Frame(parent)
+        buttons_frame.pack(fill="x", padx=4, pady=4)
         
         # Configure grid for quadrant layout in buttons frame
         buttons_frame.columnconfigure((0, 1), weight=1, uniform="col")
         buttons_frame.rowconfigure((0, 1), weight=1, uniform="row")
 
-        # Create buttons in quadrant layout - larger buttons with bigger text
+        # Create buttons in quadrant layout using pack-compatible approach
         activate_btn = tk.Button(buttons_frame, text="Activate", 
                                 command=self.parent.activate_experiment,
-                                font=('Arial', 10, 'bold'), relief="raised", bd=2,
-                                width=14, height=1, bg="#2E7D32", fg="white", 
+                                font=('Arial', 8, 'bold'), relief="raised", bd=3,
+                                width=8, height=1, bg="#2E7D32", fg="white", 
                                 activebackground="#2E7D32")
-        activate_btn.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        activate_btn.grid(row=0, column=0, sticky="nsew", padx=3, pady=3)
         
         start_btn = tk.Button(buttons_frame, text="Start", 
                              command=self.parent.start_experiment,
-                             font=('Arial', 10, 'bold'), relief="raised", bd=2,
-                             width=14, height=1, bg="#1565C0", fg="white", 
+                             font=('Arial', 8, 'bold'), relief="raised", bd=3,
+                             width=8, height=1, bg="#1565C0", fg="white", 
                              activebackground="#1565C0")
-        start_btn.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
+        start_btn.grid(row=0, column=1, sticky="nsew", padx=3, pady=3)
         
         test_btn = tk.Button(buttons_frame, text="Test Field", 
                             command=self.parent.test_field,
-                            font=('Arial', 10, 'bold'), relief="raised", bd=2,
-                            width=14, height=1, bg="#EF6C00", fg="white", 
+                            font=('Arial', 8, 'bold'), relief="raised", bd=3,
+                            width=8, height=1, bg="#EF6C00", fg="white", 
                             activebackground="#EF6C00")
-        test_btn.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        test_btn.grid(row=1, column=0, sticky="nsew", padx=3, pady=3)
         
         scram_btn = tk.Button(buttons_frame, text="SCRAM", 
                              command=self.parent.scram_experiment,
-                             font=('Arial', 10, 'bold'), relief="raised", bd=2,
-                             width=14, height=1, bg="#B71C1C", fg="white", 
+                             font=('Arial', 8, 'bold'), relief="raised", bd=3,
+                             width=8, height=1, bg="#B71C1C", fg="white", 
                              activebackground="#B71C1C")
-        scram_btn.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
+        scram_btn.grid(row=1, column=1, sticky="nsew", padx=3, pady=3)
         
-        # Add tooltips to control buttons
-        self._add_control_button_tooltips(activate_btn, start_btn, test_btn, scram_btn)
-        
-        # Refresh the method list and preset list for the new comboboxes
+        # Refresh the method list for the new combobox
         self.parent.refresh_method_list()
-        self.parent.refresh_preset_list()
-        
-    def _add_control_button_tooltips(self, activate_btn, start_btn, test_btn, scram_btn):
-        """Add comprehensive tooltips to control buttons"""
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            
-            # Control button tooltips with detailed explanations
-            ToolTip(activate_btn, 
-                   "ACTIVATE: Starts the sample activation sequence.\n"
-                   "• Opens valves for injection and activation\n"
-                   "• Runs degassing phase to remove oxygen\n"
-                   "• Activates the catalyst with parahydrogen\n"
-                   "• Returns to initial state when complete", 
-                   parent=self.parent)
-                   
-            ToolTip(start_btn, 
-                   "START: Begins the main polarization experiment.\n"
-                   "• Starts bubbling sequence with parahydrogen\n"
-                   "• Applies selected polarization method\n"
-                   "• Transfers hyperpolarized sample to NMR\n"
-                   "• Includes automatic timing from method file", 
-                   parent=self.parent)
-                   
-            ToolTip(test_btn, 
-                   "TEST FIELD: Tests the polarization method only.\n"
-                   "• Applies the selected polarization waveform\n"
-                   "• Does not change valve positions\n"
-                   "• Useful for testing magnetic field sequences\n"
-                   "• Shows waveform preview in real-time", 
-                   parent=self.parent)
-                   
-            ToolTip(scram_btn, 
-                   "SCRAM: Emergency stop for all operations.\n"
-                   "• Immediately stops all running sequences\n"
-                   "• Sets all analog outputs to 0V\n"
-                   "• Returns system to Initial_State configuration\n"
-                   "• Use in case of emergency or malfunction", 
-                   parent=self.parent)
-                   
-        except Exception as e:
-            print(f"Error adding control button tooltips: {e}")
-            
-    def _add_plot_tooltip(self, canvas_widget, plot_type):
-        """Add tooltips to plot canvases"""
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            
-            if plot_type == "waveform":
-                tooltip_text = ("WAVEFORM PLOT: Shows the polarization method waveform.\n"
-                               "• Displays voltage vs time for the selected method\n"
-                               "• Updates automatically when method is changed\n"
-                               "• Shows live data during 'Test Field' operation\n"
-                               "• Grey out bubbling time when method is selected")
-            elif plot_type == "field":
-                tooltip_text = ("MAGNETIC FIELD PLOT: Live monitoring of field strength.\n"
-                               "• Real-time magnetic field measurements\n"
-                               "• Current reading shown in top-right corner\n"
-                               "• Tracks field changes during experiments\n"
-                               "• Useful for monitoring field stability")
-            else:
-                tooltip_text = f"{plot_type.upper()} PLOT: Interactive data visualization"
-            
-            ToolTip(canvas_widget, tooltip_text, parent=self.parent)
-            
-        except Exception as e:
-            print(f"Error adding plot tooltip: {e}")
         
     def create_general_params_preview(self, parent):
-        """Create a preview of general parameters in the main tab matching advanced parameters style"""
+        """Create a preview of general parameters in the main tab"""
         
         # Add a few key parameters as a preview
         params = [
-            ("Activation Time", "", ["s", "min", "h"]),
             ("Bubbling Time", "", ["s", "min", "h"]),
             ("Magnetic Field", "", ["mT", "T", "G"]),
             ("Temperature", "", ["K", "°C", "°F"]),
@@ -615,19 +823,13 @@ class TabManager:
         ]
         
         for i, (label, default_val, unit_options) in enumerate(params):
-            row = tk.Frame(parent, bg=self.parent.theme_manager.color("frame_bg"))
+            row = tk.Frame(parent)
             row.pack(fill="x", padx=5, pady=2)
             
-            # Match advanced parameters styling: wider label, better spacing
-            label_widget = tk.Label(row, text=label, width=20, anchor="w", 
-                    bg=self.parent.theme_manager.color("label_bg"),
-                    fg=self.parent.theme_manager.color("label_fg"))
-            label_widget.pack(side="left")
-            entry = tk.Entry(row, width=10, 
-                           bg=self.parent.theme_manager.color("entry_bg"),
-                           fg=self.parent.theme_manager.color("entry_fg"))
+            tk.Label(row, text=f"{label}:", width=15, anchor="w").pack(side="left")
+            entry = tk.Entry(row, width=10)
             entry.insert(0, default_val)
-            entry.pack(side="left")
+            entry.pack(side="left", padx=2)
             
             # Store the entry in self.parent.entries for access by other methods
             self.parent.entries[label] = entry
@@ -636,109 +838,26 @@ class TabManager:
             unit_var = tk.StringVar(value=unit_options[0])
             self.parent.units[label] = unit_var
             
-            # Create wider unit dropdown to match advanced parameters
+            # Create editable unit dropdown
             unit_combo = ttk.Combobox(row, textvariable=unit_var, 
-                                     values=unit_options, width=12, state="normal")
-            unit_combo.pack(side="left")
-            
-            # Add tooltips to main tab parameters
-            self._add_parameter_tooltips(label_widget, entry, unit_combo, label, unit_options)
+                                     values=unit_options, width=8, state="readonly")
+            unit_combo.pack(side="left", padx=2)
         
         # Add link to advanced parameters
-        link_frame = tk.Frame(parent, bg=self.parent.theme_manager.color("frame_bg"))
-        link_frame.pack(fill="x", pady=(5, 0))
-        advanced_btn = ttk.Button(link_frame, text="Go to Advanced Parameters", 
-                  command=lambda: self.parent.notebook.select(1))
-        advanced_btn.pack()
-        
-        # Add tooltip to advanced parameters button
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            ToolTip(advanced_btn, 
-                   "ADVANCED PARAMETERS: Access detailed experimental settings.\n"
-                   "• Configure valve timing and sequences\n"
-                   "• Set polarization method parameters\n"
-                   "• Manage experimental presets\n"
-                   "• Advanced interface options and theming", 
-                   parent=self.parent)
-        except Exception as e:
-            print(f"Error adding advanced button tooltip: {e}")
-            
-    def _add_parameter_tooltips(self, label_widget, entry, unit_combo, param_name, unit_options):
-        """Add tooltips to parameter UI elements"""
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            
-            # Parameter-specific tooltip texts
-            tooltip_texts = {
-                "Activation Time": "Duration for sample activation sequence.\nTime spent in the activation state to prepare the sample for polarization.",
-                "Bubbling Time": "Duration for bubbling parahydrogen through the sample.\nNote: This will be disabled when a polarization method is selected,\nas the method file will control the timing automatically.",
-                "Magnetic Field": "Magnetic field strength during the polarization process.\nUsed to control spin dynamics and polarization efficiency.",
-                "Temperature": "Sample temperature during the experiment.\nAffects reaction kinetics and polarization decay rates.",
-                "Flow Rate": "Gas flow rate in standard cubic centimeters per minute.\nControls the rate of parahydrogen delivery to the sample.",
-                "Pressure": "System pressure during the experiment.\nAffects gas solubility and reaction conditions."
-            }
-            
-            base_tooltip = tooltip_texts.get(param_name, f"Parameter: {param_name}")
-            
-            # Add tooltips to each widget
-            ToolTip(label_widget, base_tooltip, parent=self.parent)
-            ToolTip(entry, base_tooltip + "\n\nEnter numerical value for this parameter.", parent=self.parent)
-            ToolTip(unit_combo, f"Select or type the unit for {param_name}.\nSupported units: {', '.join(unit_options)}", parent=self.parent)
-            
-        except Exception as e:
-            print(f"Error adding parameter tooltips for {param_name}: {e}")
-            
-    def _add_preset_control_tooltips(self, preset_combobox, save_btn, delete_btn, refresh_btn):
-        """Add comprehensive tooltips to preset control elements"""
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            
-            # Preset control tooltips
-            ToolTip(preset_combobox, 
-                   "PRESET SELECTOR: Choose from saved parameter combinations.\n"
-                   "• Select a preset to auto-fill all parameters\n"
-                   "• Includes general parameters and advanced settings\n"
-                   "• Automatically loads associated polarization methods\n"
-                   "• Create custom presets for different experiments", 
-                   parent=self.parent)
-                   
-            ToolTip(save_btn, 
-                   "SAVE PRESET: Save current parameters as a new preset.\n"
-                   "• Captures all current parameter values\n"
-                   "• Includes both main and advanced tab settings\n"
-                   "• Stores selected polarization method\n"
-                   "• Creates reusable experimental configurations", 
-                   parent=self.parent)
-                   
-            ToolTip(delete_btn, 
-                   "DELETE PRESET: Remove the selected preset permanently.\n"
-                   "• Deletes the selected preset file\n"
-                   "• Cannot be undone - use with caution\n"
-                   "• Will ask for confirmation before deletion\n"
-                   "• Built-in presets cannot be deleted", 
-                   parent=self.parent)
-                   
-            ToolTip(refresh_btn, 
-                   "REFRESH PRESETS: Update the preset list.\n"
-                   "• Scans for new preset files\n"
-                   "• Updates dropdown with latest presets\n"
-                   "• Use after adding presets manually\n"
-                   "• Automatically sorts presets alphabetically", 
-                   parent=self.parent)
-                   
-        except Exception as e:
-            print(f"Error adding preset control tooltips: {e}")
+        link_frame = tk.Frame(parent)
+        link_frame.pack(fill="x", pady=10)
+        ttk.Button(link_frame, text="Go to Advanced Parameters", 
+                  command=lambda: self.parent.notebook.select(1)).pack()
                   
     def create_polarization_method_section(self, parent):
         """Create the polarization method configuration section with dropdown selector"""
         # Polarization Method Selection Section
-        polarization_frame = ttk.LabelFrame(parent, text="Polarization Method", padding="5")
-        polarization_frame.pack(fill="x", padx=5, pady=3)
+        polarization_frame = ttk.LabelFrame(parent, text="Polarization Method", padding="10")
+        polarization_frame.pack(fill="x", padx=10, pady=5)
         
         # Method Selection Dropdown
         method_frame = ttk.Frame(polarization_frame)
-        method_frame.pack(fill="x", pady=(0, 3))
+        method_frame.pack(fill="x", pady=(0, 5))
         
         ttk.Label(method_frame, text="Method:").pack(side="left")
         
@@ -752,24 +871,28 @@ class TabManager:
         
         self.parent.polarization_method_combobox['values'] = polarization_methods
         self.parent.polarization_method_combobox.bind("<<ComboboxSelected>>", self.on_polarization_method_changed)
-        self.parent.polarization_method_combobox.pack(side="left", padx=(3, 0), fill="x", expand=True)
+        self.parent.polarization_method_combobox.pack(side="left", padx=(5, 0), fill="x", expand=True)
         
         # Add refresh button next to the combobox
         refresh_button = ttk.Button(method_frame, text="Refresh", 
                                    command=self.parent.refresh_method_list)
-        refresh_button.pack(side="left", padx=(3, 0))
+        refresh_button.pack(side="left", padx=(5, 0))
         
-        # Add check directory button
-        check_dir_button = ttk.Button(method_frame, text="Check Directory", 
-                                     command=self.parent._open_polarization_methods_directory)
-        check_dir_button.pack(side="left", padx=(3, 0))
+        # Method description/info
+        info_frame = ttk.Frame(polarization_frame)
+        info_frame.pack(fill="x", pady=(5, 0))
+        
+        self.parent.method_info_label = tk.Label(info_frame, 
+                                         text="SABRE-SHEATH: Signal Amplification by Reversible Exchange in SHield Enables Alignment Transfer to Heteronuclei",
+                                         wraplength=400, justify="left", font=("Arial", 9))
+        self.parent.method_info_label.pack(side="left", fill="x", expand=True)
         
         # Toggles Section (Audio and Tooltips as requested)
-        toggles_frame = ttk.LabelFrame(parent, text="Interface Settings", padding="5")
-        toggles_frame.pack(fill="x", padx=5, pady=3)
+        toggles_frame = ttk.LabelFrame(parent, text="Interface Settings", padding="10")
+        toggles_frame.pack(fill="x", padx=10, pady=5)
         
         # Audio toggle
-        audio_frame = tk.Frame(toggles_frame, bg=self.parent.theme_manager.color("frame_bg"))
+        audio_frame = tk.Frame(toggles_frame)
         audio_frame.pack(fill="x", pady=2)
         
         self.parent.audio_enabled_checkbox = ttk.Checkbutton(audio_frame, text="Enable Audio Feedback",
@@ -778,27 +901,13 @@ class TabManager:
         self.parent.audio_enabled_checkbox.pack(side="left")
         
         # Tooltip toggle
-        tooltip_frame = tk.Frame(toggles_frame, bg=self.parent.theme_manager.color("frame_bg"))
+        tooltip_frame = tk.Frame(toggles_frame)
         tooltip_frame.pack(fill="x", pady=2)
         
         self.parent.tooltips_enabled_checkbox = ttk.Checkbutton(tooltip_frame, text="Enable Tooltips",
-                                                        variable=self.parent.tooltips_enabled)
+                                                        variable=self.parent.tooltips_enabled,
+                                                        command=self.on_tooltip_toggle)
         self.parent.tooltips_enabled_checkbox.pack(side="left")
-        # Set the command after packing to avoid initial trigger
-        self.parent.tooltips_enabled_checkbox.config(command=self.on_tooltip_toggle)
-        
-        # Theme control
-        theme_frame = tk.Frame(toggles_frame, bg=self.parent.theme_manager.color("frame_bg"))
-        theme_frame.pack(fill="x", pady=2)
-        
-        tk.Label(theme_frame, text="Theme:", 
-                bg=self.parent.theme_manager.color("label_bg"),
-                fg=self.parent.theme_manager.color("label_fg")).pack(side="left")
-        theme_combo = ttk.Combobox(theme_frame, textvariable=self.parent.theme_var,
-                                  values=["Light", "Dark", "High-Contrast", "Normal"], 
-                                  state="readonly", width=15)
-        theme_combo.bind("<<ComboboxSelected>>", self.on_theme_changed)
-        theme_combo.pack(side="left", padx=(5, 0))
         
     def on_polarization_method_changed(self, event=None):
         """Handle polarization method selection changes - Ultra Simple Solution"""
@@ -810,56 +919,28 @@ class TabManager:
                 methods_dir = r"C:\Users\walsworthlab\Desktop\SABRE Program\config_files_SABRE\PolarizationMethods"
                 self.parent.polarization_method_file = os.path.join(methods_dir, selected_method)
                 
+                # Try to load the method file to get description
+                try:
+                    with open(self.parent.polarization_method_file, 'r') as f:
+                        method_data = json.load(f)
+                        description = method_data.get('description', f"Loaded polarization method: {selected_method}")
+                        self.parent.method_info_label.config(text=description)
+        except Exception as e:
+                    self.parent.method_info_label.config(text=f"Method file: {selected_method}")
+                    print(f"Could not load method description: {e}")
+                
                 # ULTRA SIMPLE SOLUTION: Just plot directly
                 self._plot_method_directly(self.parent.polarization_method_file, selected_method)
                 
-                # Grey out bubbling time parameter when method is selected
-                self._update_bubbling_time_state(disabled=True)
-                
             else:
+                # Default description when no method is selected
+                self.parent.method_info_label.config(text="SABRE-SHEATH: Signal Amplification by Reversible Exchange in SHield Enables Alignment Transfer to Heteronuclei", fg="black")
                 self.parent.polarization_method_file = None
-                # Re-enable bubbling time parameter when no method is selected
-                self._update_bubbling_time_state(disabled=False)
                 
             print(f"Polarization method changed to: {selected_method}")
             
         except Exception as e:
             print(f"Error handling polarization method change: {e}")
-            
-    def _update_bubbling_time_state(self, disabled=True):
-        """Update the state (enabled/disabled) of bubbling time entries"""
-        try:
-            state = "disabled" if disabled else "normal"
-            
-            # Update Main tab bubbling time entry
-            if hasattr(self.parent, 'entries') and "Bubbling Time" in self.parent.entries:
-                entry = self.parent.entries["Bubbling Time"]
-                if hasattr(entry, 'config'):
-                    entry.config(state=state)
-                    if disabled:
-                        entry.config(bg="#f0f0f0")  # Grey background when disabled
-                    else:
-                        entry.config(bg=self.parent.theme_manager.color("entry_bg"))
-            
-            # Update Advanced tab bubbling time entry  
-            if (hasattr(self.parent, 'parameter_section') and 
-                self.parent.parameter_section and 
-                hasattr(self.parent.parameter_section, 'entries') and 
-                "Bubbling Time" in self.parent.parameter_section.entries):
-                
-                entry = self.parent.parameter_section.entries["Bubbling Time"]
-                if hasattr(entry, 'config'):
-                    entry.config(state=state)
-                    if disabled:
-                        entry.config(bg="#f0f0f0")  # Grey background when disabled
-                    else:
-                        entry.config(bg=self.parent.theme_manager.color("entry_bg"))
-            
-            action = "disabled" if disabled else "enabled"
-            print(f"Bubbling time parameter {action} - polarization method timing will be used")
-            
-        except Exception as e:
-            print(f"Error updating bubbling time state: {e}")
     
     def _plot_method_directly(self, method_file, method_name):
         """Ultra simple direct plotting - no fancy refresh logic"""
@@ -881,20 +962,14 @@ class TabManager:
             main_ax = self.parent.plot_controller.main_ax
             main_canvas = self.parent.plot_controller.main_canvas
             
-            # Clear and plot with consistent styling
+            # Clear and plot
             main_ax.clear()
             time_axis = [i / sr for i in range(len(buf))]
             main_ax.plot(time_axis, buf, 'b-', linewidth=1)
-            main_ax.set_xlabel('Time (s)', color=self.parent.theme_manager.color("fg"), fontsize=8)
-            main_ax.set_ylabel('Voltage (V)', color=self.parent.theme_manager.color("fg"), fontsize=8)
-            main_ax.set_title(f'Polarization Method: {method_name}', color=self.parent.theme_manager.color("fg"), fontsize=9)
-            main_ax.grid(True, color=self.parent.theme_manager.color("grid_color"), alpha=0.3)
-            main_ax.tick_params(colors=self.parent.theme_manager.color("fg"), labelsize=8)
-            # Set spine colors
-            for spine in main_ax.spines.values():
-                spine.set_color(self.parent.theme_manager.color("fg"))
-            # Set background color
-            main_ax.set_facecolor(self.parent.theme_manager.color("plot_bg"))
+            main_ax.set_xlabel('Time (s)')
+            main_ax.set_ylabel('Voltage (V)')
+            main_ax.set_title(f'Polarization Method: {method_name}')
+            main_ax.grid(True, alpha=0.3)
             
             # Force canvas update
             main_canvas.draw()
@@ -921,17 +996,6 @@ class TabManager:
             print("Tooltips enabled")
         else:
             print("Tooltips disabled")
-    
-    def on_theme_changed(self, event=None):
-        """Handle theme selection changes"""
-        selected_theme = self.parent.theme_var.get()
-        print(f"Theme changed to: {selected_theme}")
-        
-        # Apply theme using the theme manager
-        if hasattr(self.parent, 'theme_manager'):
-            self.parent.theme_manager.apply_theme(selected_theme)
-        else:
-            print("Theme manager not available")
 
 class ExperimentController:
     """Handles experiment sequences and state management"""
@@ -939,23 +1003,23 @@ class ExperimentController:
         self.gui = sabre_gui
         self.running = False
         self.stop_polarization = False
-        self.scram_active = False  # Add SCRAM flag to prevent state changes after SCRAM
         # Add DAQ task management
         self.test_task = None
         self.dio_task = None
         self.task_lock = threading.Lock()
-        
+
     def activate_experiment(self):
         """Activate the experiment sequence with proper DAQ interactions"""
         missing_params = []
         required_fields = [
-            ("Activation Time", self.gui.entries.get("Activation Time")),
+            ("Activation Time", getattr(self.gui, 'activation_time_entry', None)),
             ("Temperature", self.gui.entries.get("Temperature")),
             ("Flow Rate", self.gui.entries.get("Flow Rate")),
             ("Pressure", self.gui.entries.get("Pressure")),
             ("Injection Time", getattr(self.gui, 'injection_time_entry', None)),
             ("Valve Control Timing", getattr(self.gui, 'valve_time_entry', None)),
             ("Degassing Time", getattr(self.gui, 'degassing_time_entry', None)),
+            ("Bubbling Time", self.gui.entries.get("Bubbling Time")),
             ("Transfer Time", getattr(self.gui, 'transfer_time_entry', None)),
             ("Recycle Time", getattr(self.gui, 'recycle_time_entry', None)),
         ]
@@ -985,7 +1049,8 @@ class ExperimentController:
                 return
                 
             # Update GUI state
-            self.gui.set_controls_state("Activating")
+            if hasattr(self.gui, 'state_label'):
+                self.gui.state_label.config(text="State: Activating")
             
             # Update virtual panel if it exists
             if hasattr(self.gui, 'virtual_panel') and self.gui.virtual_panel and self.gui.virtual_panel.winfo_exists():
@@ -994,7 +1059,7 @@ class ExperimentController:
             valve_duration = self.gui.get_value('valve_time_entry')
             injection_duration = self.gui.get_value('injection_time_entry')
             degassing_duration = self.gui.get_value('degassing_time_entry')
-            activation_duration = self.gui.get_value('Activation Time') or 0.0
+            activation_duration = self.gui.get_value('activation_time_entry')
 
             state_sequence = [
                 ("Initial_State", valve_duration),
@@ -1018,7 +1083,7 @@ class ExperimentController:
                     if hasattr(self.gui, 'virtual_panel') and self.gui.virtual_panel and self.gui.virtual_panel.winfo_exists():
                         self.gui.virtual_panel.load_config_visual(state)
                     
-                    # Wait for duration - hold the current state for the specified time
+                    # Wait for duration
                     if duration:
                         start_time = time.time()
                         while time.time() - start_time < duration and hasattr(self, 'running') and self.running:
@@ -1028,15 +1093,12 @@ class ExperimentController:
             print(f"Error in activation sequence: {error}")
         finally:
             self.running = False
-            # Only load Initial_State if SCRAM is not active (SCRAM handles state loading)
-            if not getattr(self, 'scram_active', False):
-                self.load_config("Initial_State")  # Always return to initial state
-                self.gui.set_controls_state("Idle")
-                # Update virtual panel if it exists
-                if hasattr(self.gui, 'virtual_panel') and self.gui.virtual_panel and self.gui.virtual_panel.winfo_exists():
-                    self.gui.virtual_panel.load_config_visual("Initial_State")
-            else:
-                print("Activation sequence cleanup skipped - SCRAM active")
+            self.load_config("Initial_State")  # Always return to initial state
+            if hasattr(self.gui, 'state_label'):
+                self.gui.state_label.config(text="State: Idle")
+            # Update virtual panel if it exists
+            if hasattr(self.gui, 'virtual_panel') and self.gui.virtual_panel and self.gui.virtual_panel.winfo_exists():
+                self.gui.virtual_panel.load_config_visual("Initial_State")
 
     def start_experiment(self):
         """Start the bubbling sequence with integrated method timing"""
@@ -1123,7 +1185,8 @@ class ExperimentController:
                 self.gui.stop_timer()
                 return
                 
-            self.gui.set_controls_state("Bubbling the Sample")
+            if hasattr(self.gui, 'state_label'):
+                self.gui.state_label.config(text="State: Bubbling the Sample")
             
             # Update virtual panel if it exists
             if hasattr(self.gui, 'virtual_panel') and self.gui.virtual_panel and self.gui.virtual_panel.winfo_exists():
@@ -1169,7 +1232,7 @@ class ExperimentController:
                         if hasattr(self.gui, 'virtual_panel') and self.gui.virtual_panel and self.gui.virtual_panel.winfo_exists():
                             self.gui.virtual_panel.load_config_visual(state)
                         
-                        # Wait for duration - hold the current state for the specified time
+                        # Wait for duration
                         if duration:
                             start_time = time.time()
                             while time.time() - start_time < duration and hasattr(self, 'running') and self.running and not self.stop_polarization:
@@ -1179,17 +1242,11 @@ class ExperimentController:
             print(f"Error in bubbling sequence: {error}")
         finally:
             self.running = False
-            # Only load Initial_State if SCRAM is not active and not already stopped
-            if not self.stop_polarization and not getattr(self, 'scram_active', False):
+            if not self.stop_polarization:  # Only if not already stopped
                 self.load_config("Initial_State")  # Return to initial state
                 # Update virtual panel if it exists
                 if hasattr(self.gui, 'virtual_panel') and self.gui.virtual_panel and self.gui.virtual_panel.winfo_exists():
                     self.gui.virtual_panel.load_config_visual("Initial_State")
-            else:
-                if getattr(self, 'scram_active', False):
-                    print("Bubbling sequence cleanup skipped - SCRAM active")
-                else:
-                    print("Bubbling sequence cleanup skipped - already stopped by SCRAM")
 
     def run_polarization_method(self):
         """Execute the selected polarization method during experiment sequence"""
@@ -1238,7 +1295,8 @@ class ExperimentController:
                                                      dc_offset=initial_voltage)
 
                 # Update the state label
-                self.gui.set_controls_state("Polarizing Sample")
+                if hasattr(self.gui, 'state_label'):
+                    self.gui.state_label.config(text="State: Applying Polarization Method")
                 print(f"Polarization method loaded: buffer length={len(buf)}, sample rate={sr}")
 
                 # Configure and run DAQ task for the experiment
@@ -1318,10 +1376,6 @@ class ExperimentController:
         Write a numpy 1-D array to an AO channel with hardware timing.
         If continuous=True the buffer regenerates until you stop the task.
         """
-        if not self.test_task:
-            print("Error: No test task available for waveform writing")
-            return False
-            
         try:
             import nidaqmx.constants as C
             from nidaqmx.stream_writers import AnalogSingleChannelWriter
@@ -1402,21 +1456,21 @@ class ExperimentController:
                     time.sleep(0.2)
                     
                     if self.stop_polarization:  # Check if stopped before starting
-                        return
-                        
+                return
+
                     # Reload the config (we already validated it exists above)
                     with open(self.gui.polarization_method_file) as f:
-                        cfg = json.load(f)
+                cfg = json.load(f)
 
                     # Check if this is a SLIC sequence file and get buffer
-                    if isinstance(cfg, dict) and cfg.get("type") == "SLIC_sequence":
-                        buf, sr = build_composite_waveform(cfg)
-                        daq_channel = "Dev1/ao1"
-                        voltage_range = {"min": -10.0, "max": 10.0}
-                    else:
-                        daq_channel = cfg.get("daq_channel", "Dev1/ao1")
-                        voltage_range = cfg.get("voltage_range", {"min": -10.0, "max": 10.0})
-                        initial_voltage = cfg.get("initial_voltage", 0.0)
+            if isinstance(cfg, dict) and cfg.get("type") == "SLIC_sequence":
+                buf, sr = build_composite_waveform(cfg)
+                daq_channel = "Dev1/ao1"
+                voltage_range = {"min": -10.0, "max": 10.0}
+            else:
+                daq_channel = cfg.get("daq_channel", "Dev1/ao1")
+                voltage_range = cfg.get("voltage_range", {"min": -10.0, "max": 10.0})
+                initial_voltage = cfg.get("initial_voltage", 0.0)
                         buf, sr = build_composite_waveform(cfg["ramp_sequences"],
                                                          dc_offset=initial_voltage)
 
@@ -1424,17 +1478,17 @@ class ExperimentController:
                     self.test_task = nidaqmx.Task()
                     try:
                         self.test_task.ao_channels.add_ao_voltage_chan(
-                                daq_channel,
-                                min_val=voltage_range["min"],
+                    daq_channel,
+                    min_val=voltage_range["min"],
                                 max_val=voltage_range["max"])
 
                         self.test_task.timing.cfg_samp_clk_timing(
-                                sr,
-                                sample_mode=AcquisitionType.FINITE,
+                    sr,
+                    sample_mode=AcquisitionType.FINITE,
                                 samps_per_chan=len(buf))
 
                         writer = AnalogSingleChannelWriter(self.test_task.out_stream)
-                        writer.write_many_sample(buf)
+                writer.write_many_sample(buf)
                         self.test_task.start()
                         task_started = True
 
@@ -1448,7 +1502,7 @@ class ExperimentController:
                                 if task_started and self.test_task.is_task_done():
                                     self.test_task.write(0.0)  # Set to 0V before closing
                                 self.test_task.close()
-                            except Exception as e:
+        except Exception as e:
                                 print(f"Error cleaning up test task: {e}")
                         self.test_task = None
 
@@ -1571,11 +1625,6 @@ class ExperimentController:
                 except Exception as e:
                     print(f"Error closing {task_attr}: {e}")
                 setattr(self, task_attr, None)
-                
-    def clear_scram_flag(self):
-        """Clear the SCRAM flag to allow normal operation"""
-        self.scram_active = False
-        print("SCRAM flag cleared - normal operation can resume")
 
     def load_config(self, state):
         """Load and apply configuration from file with enhanced DAQ control."""
@@ -1602,8 +1651,8 @@ class ExperimentController:
                 config_data = json.load(file)
 
             human_readable_state = state_mapping.get(state, "Unknown State")
-            # Use the set_controls_state method for consistent state display
-            self.gui.set_controls_state(human_readable_state.replace("State: ", ""))
+            if hasattr(self.gui, 'state_label'):
+                self.gui.state_label.config(text=f"State: {human_readable_state}")
 
             # Map valve numbers to DIO channels (Valve 1 = DIO0, etc)
             dio_states = {}
@@ -1662,9 +1711,45 @@ class ExperimentController:
         except Exception as e:
             print(f"Error sending analog signal to {channel}: {e}")
 
+# --- TimerWidget Helper Class ---
+class TimerWidget(tk.Frame):
+    def __init__(self, master, font=("Courier", 12, "bold"), **kwargs):
+        super().__init__(master, **kwargs)
+        self.label = tk.Label(self, text="00:00.000", font=font)
+        self.label.pack()
+        self._running = False
+        self._end_time = None
+        self._after_id = None
+        
+    def start(self, duration):
+        self._end_time = time.time() + duration
+        self._running = True
+        self._update()
+        
+    def _update(self):
+        if not self._running or self._end_time is None:
+            return
+        remaining = float(self._end_time - time.time())
+        remaining = max(0, remaining)
+        minutes = int(remaining // 60)
+        seconds = int(remaining % 60)
+        milliseconds = int((remaining % 1) * 1000)
+        self.label.config(text=f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}")
+        if remaining > 0.0:
+            self._after_id = self.after(10, self._update)
+            else:
+            self._running = False
+            self.label.config(text="00:00.000")
+            
+    def stop(self):
+        self._running = False
+        if self._after_id:
+            self.after_cancel(self._after_id)
+            self._after_id = None
+
 # --- Main SABRE GUI Class ---
 class SABREGUI(tk.Frame):
-    """Main SABRE GUI application - now modular and organized with focused responsibilities"""
+    """Main SABRE GUI application - now modular and organized"""
     
     def __init__(self, master=None):
         super().__init__(master)
@@ -1673,19 +1758,11 @@ class SABREGUI(tk.Frame):
         # Initialize core controllers and managers
         self.daq_controller = DAQController()
         self.state_manager = StateManager(CONFIG_DIR)
+        self.timer_controller = TimerController(self)
         self.plot_controller = PlotController(self)
         self.ui_manager = UIManager(self)
         self.method_manager = MethodManager(self)
         self.tab_manager = TabManager(self)
-        self.theme_manager = ThemeManager(self)
-        
-        # Initialize new focused controllers
-        self.window_manager = WindowManager(self)
-        self.preset_controller = PresetController(self)
-        self.waveform_controller = WaveformController(self)
-        self.countdown_controller = CountdownController(self)
-        self.widget_synchronizer = WidgetSynchronizer(self)
-        self.tooltip_manager = TooltipManager(self)
         
         # Initialize specialized components
         self.scram = ScramController(self)
@@ -1700,10 +1777,8 @@ class SABREGUI(tk.Frame):
         self.setup_ui_structure()
         self.setup_ui_components()
         
-        # Apply initial theme based on user selection
-        self.theme_manager.apply_theme(self.theme_var.get())
-        
-        # Initialize countdown display (if countdown_label exists)
+        # Initialize timer
+        self.timer_controller.update_elapsed_timer()
         
     def setup_variables(self):
         """Initialize all instance variables"""
@@ -1743,8 +1818,7 @@ class SABREGUI(tk.Frame):
         
         # Initialize toggle variables
         self.audio_enabled = tk.BooleanVar(value=True)
-        self.tooltips_enabled = tk.BooleanVar(value=False)
-        self.theme_var = tk.StringVar(value="Normal")
+        self.tooltips_enabled = tk.BooleanVar(value=True)
         
         # Preset and method variables
         self.preset_combobox = None  # Initialize preset combobox reference
@@ -1775,11 +1849,11 @@ class SABREGUI(tk.Frame):
         self.setup_tab_styles()
         
         # Status Bar at the Top (Timer removed)
-        self.status_timer_bar = tk.Frame(self, relief="groove", bd=2)
+        self.status_timer_bar = tk.Frame(self, bg="#e0e0e0", relief="groove", bd=2)
         self.status_timer_bar.pack(fill="x", side="top", padx=0, pady=(0, 2))
         self.status_var = tk.StringVar(value="System Ready")
         self.status_label = tk.Label(self.status_timer_bar, textvariable=self.status_var, 
-                                   font=("Arial", 11, "bold"), fg="darkgreen")
+                                   font=("Arial", 11, "bold"), fg="darkgreen", bg="#e0e0e0")
         self.status_label.pack(side="left", padx=(10, 20), pady=2)
         
         # Create basic widgets
@@ -1792,7 +1866,7 @@ class SABREGUI(tk.Frame):
         
         # Bind events
         self.bind("<Configure>", lambda e: self._update_tab_overflow())
-        self.notebook.bind("<Button-3>", self._maybe_clone_tab, add="+")
+        self.notebook.bind("<Button-1>", self._maybe_clone_tab, add="+")
         
     def setup_tab_styles(self):
         """Setup tab styling"""
@@ -1874,10 +1948,6 @@ class SABREGUI(tk.Frame):
         try:
             slic_panel = SLICSequenceControl(parent, embedded=True)
             slic_panel.pack(fill="both", expand=True)
-            
-            # Add comprehensive tooltips to SLIC Control components
-            self._add_slic_control_tooltips(slic_panel)
-            
         except Exception as e:
             error_label = tk.Label(parent, text=f"SLIC Control Error: {e}", 
                                  fg="red", font=("Arial", 12))
@@ -1964,7 +2034,7 @@ class SABREGUI(tk.Frame):
         except Exception as e:
             # Log errors but don't crash
             print(f"Tab overflow error: {e}")
-            
+
     def safe_select_tab(self, idx):
         """Safely select a tab by index, with error handling"""
         try:
@@ -1973,7 +2043,7 @@ class SABREGUI(tk.Frame):
             print(f"Error selecting tab {idx}: {e}")
             
     def _maybe_clone_tab(self, event):
-        """Handle right-click on tab for detaching all tabs"""
+        """Handle right-click on tab for cloning"""
         elem = self.notebook.identify(event.x, event.y)
         if elem != "label":
             return
@@ -1981,14 +2051,13 @@ class SABREGUI(tk.Frame):
         index = self.notebook.index("@%d,%d" % (event.x, event.y))
         tab_text = self.notebook.tab(index, "text")
         
-        # Allow detaching all tabs
-        available_tabs = ["Main", "Advanced Parameters", "Testing", "SLIC Control", "% Polarization Calc"]
-        if tab_text not in available_tabs:
+        # Only allow detaching Main and Advanced Parameters tabs as requested
+        if tab_text not in ["Main", "Advanced Parameters"]:
             return
             
         # Create context menu
         context_menu = tk.Menu(self, tearoff=0)
-        context_menu.add_command(label="Detach Tab", command=lambda: self._clone_tab(tab_text))
+        context_menu.add_command(label="Detach", command=lambda: self._clone_tab(tab_text))
         
         try:
             context_menu.tk_popup(event.x_root, event.y_root)
@@ -1996,13 +2065,12 @@ class SABREGUI(tk.Frame):
             context_menu.grab_release()
 
     def _clone_tab(self, tab_text):
-        """Create a detached window for any tab."""
-        available_tabs = ["Main", "Advanced Parameters", "Testing", "SLIC Control", "% Polarization Calc"]
-        if tab_text not in available_tabs:
+        """Create a detached window for Main or Advanced Parameters tabs."""
+        if tab_text not in ["Main", "Advanced Parameters"]:
             return
         
         # Check if already detached
-        detached_attr = f"_detached_{tab_text.replace(' ', '_').replace('%', 'percent').lower()}"
+        detached_attr = f"_detached_{tab_text.replace(' ', '_').lower()}"
         if hasattr(self, detached_attr) and getattr(self, detached_attr) and getattr(self, detached_attr).winfo_exists():
             getattr(self, detached_attr).lift()  # Bring to front
             return
@@ -2010,20 +2078,7 @@ class SABREGUI(tk.Frame):
         try:
             win = tk.Toplevel(self)
             win.title(f"{tab_text} (Detached)")
-            
-            # Set the application icon for detached window
-            self._set_sabre_icon(win)
-            
-            # Set appropriate window size based on tab type
-            if tab_text in ["Main", "Advanced Parameters"]:
-                win.geometry("900x700")
-            elif tab_text == "Testing":
-                win.geometry("1000x800")
-            elif tab_text == "SLIC Control":
-                win.geometry("800x600")
-            elif tab_text == "% Polarization Calc":
-                win.geometry("700x500")
-                
+            win.geometry("900x700")
             win.protocol("WM_DELETE_WINDOW", lambda: self._on_detached_close(tab_text, win))
             
             # Store reference to detached window
@@ -2032,7 +2087,7 @@ class SABREGUI(tk.Frame):
             container = ttk.Frame(win)
             container.pack(fill="both", expand=True, padx=10, pady=10)
             
-            # Create content based on tab type
+            # Create synchronized content
             if tab_text == "Main":
                 self.tab_manager.create_main_tab(container, detached=True)
                 # Find original tab and sync
@@ -2050,18 +2105,6 @@ class SABREGUI(tk.Frame):
                         original_tab = self.notebook.nametowidget(self.notebook.tabs()[i])
                         self.sync_widget_values(original_tab, container)
                         break
-                        
-            elif tab_text == "Testing":
-                self.tab_manager.create_testing_tab(container)
-                
-            elif tab_text == "SLIC Control":
-                self.tab_manager.create_slic_tab(container)
-                
-            elif tab_text == "% Polarization Calc":
-                self.tab_manager.create_polarization_tab(container)
-            
-            # Auto-skin the detached window
-            self.theme_manager._apply_theme_recursive(win, self.theme_manager.get_theme_colors())
             
         except Exception as e:
             print(f"Error creating detached tab '{tab_text}': {e}")
@@ -2069,73 +2112,74 @@ class SABREGUI(tk.Frame):
     
     def _on_detached_close(self, tab_text, window):
         """Handle closing of detached window"""
-        detached_attr = f"_detached_{tab_text.replace(' ', '_').replace('%', 'percent').lower()}"
+        detached_attr = f"_detached_{tab_text.replace(' ', '_').lower()}"
         if hasattr(self, detached_attr):
             delattr(self, detached_attr)
         window.destroy()
 
-    # Panel opening methods - delegate to window manager
+    # Panel opening methods
     def open_ai_panel(self):
         """Launch the miniature AI test panel."""
-        self.window_manager.open_panel("ai")
+        AnalogInputPanel(self, embedded=False)
 
     def open_ao_panel(self):
         """Launch the miniature AO test panel."""
-        self.window_manager.open_panel("ao")
+        AnalogOutputPanel(self, embedded=False)
 
     def open_slic_control(self):
         """Open SLIC control window"""
-        self.window_manager.open_panel("slic")
+        try:
+            SLICSequenceControl(self, embedded=False)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open SLIC Control: {e}")
     
     def open_polarization_calculator(self):
         """Open polarization calculator window"""
-        self.window_manager.open_panel("polarization")
+        try:
+            PolarizationApp(self, embedded=False)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open Polarization Calculator: {e}")
             
     def open_full_flow_system(self):
         """Open the Full Flow System window"""
-        self.window_manager.open_panel("full_flow")
+        try:
+            if not hasattr(self, 'full_flow_window') or self.full_flow_window is None:
+                self.full_flow_window = tk.Toplevel(self)
+                self.full_flow_window.title("Full Flow System")
+                self.full_flow_window.geometry("800x600")
+                
+                # Create the FullFlowSystem instance in the new window
+                full_flow_app = FullFlowSystem(self.full_flow_window)
+                full_flow_app.pack(fill="both", expand=True)
+                
+                # Handle window close event
+                def on_closing():
+                    self.full_flow_window.destroy()
+                    self.full_flow_window = None
+                
+                self.full_flow_window.protocol("WM_DELETE_WINDOW", on_closing)
+            else:
+                # Bring existing window to front
+                self.full_flow_window.lift()
+                self.full_flow_window.focus_force()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open Full Flow System: {e}")
 
     def toggle_virtual_panel(self):
         """Toggle the Virtual Testing Environment window"""
-        self.window_manager.open_panel("virtual")
-
-    def _set_sabre_icon(self, window):
-        """Set the SABRE application icon on any window"""
-        try:
-            from PIL import Image, ImageTk
-            icon_path = r"C:\Users\walsworthlab\Desktop\SABRE Program\SABREAppICON.png"
-            if os.path.exists(icon_path):
-                icon_image = Image.open(icon_path)
-                # Resize icon to appropriate size for window icon (32x32 is standard)
-                icon_image = icon_image.resize((32, 32), Image.Resampling.LANCZOS)
-                icon_photo = ImageTk.PhotoImage(icon_image)
-                window.iconphoto(True, icon_photo)
-                return True
+        if self.virtual_panel is None or not self.virtual_panel.winfo_exists():
+            self.virtual_panel = VirtualTestingPanel(self, embedded=False)
+        else:
+            if hasattr(self.virtual_panel, 'toplevel') and self.virtual_panel.toplevel:
+                self.virtual_panel.toplevel.destroy()
             else:
-                print(f"Icon file not found: {icon_path}")
-                return False
-        except ImportError:
-            print("PIL/Pillow not available - icon not set")
-            return False
-        except Exception as e:
-            print(f"Error setting window icon: {e}")
-            return False
+                self.virtual_panel.destroy()
+            self.virtual_panel = None
 
     def get_value(self, entry_attr, conversion_type="time"):
         """Get parameter value with unit conversion"""
-        # First check if this is a main tab entry (stored in self.entries)
-        if hasattr(self, 'entries') and entry_attr in self.entries:
-            entry = self.entries[entry_attr]
-            unit_var = self.units.get(entry_attr, tk.StringVar(value="s"))
-            
-            # Import conversion function
-            from Nested_Programs.Utility_Functions import get_value as convert_value
-            return convert_value(entry, unit_var, conversion_type)
-            
-        # Then check parameter section for advanced parameters
         if self.parameter_section is not None and hasattr(self.parameter_section, 'get_value'):
             return self.parameter_section.get_value(entry_attr, conversion_type)
-            
         return 0.0
 
     # Experiment control methods (delegate to experiment controller)
@@ -2155,10 +2199,6 @@ class SABREGUI(tk.Frame):
         """Instant emergency stop with proper DAQ interaction."""
         print("EMERGENCY STOP ACTIVATED")
         
-        # Set SCRAM flag to prevent other sequences from loading states
-        if hasattr(self, 'experiment_controller'):
-            self.experiment_controller.scram_active = True
-        
         # Stop countdown timer
         self.stop_countdown()
         
@@ -2170,24 +2210,7 @@ class SABREGUI(tk.Frame):
         # Use ScramController to handle emergency stop
         self.scram()
     
-        # After SCRAM hardware cleanup, explicitly load Initial_State to ensure proper valve positions
-        try:
-            if hasattr(self, 'experiment_controller'):
-                success = self.experiment_controller.load_config("Initial_State")
-                if success:
-                    print("SCRAM: Initial_State loaded and maintained")
-                    if hasattr(self, 'state_label'):
-                        self.state_label.config(text="State: Initial (Post-SCRAM)")
-                    
-                    # Update virtual panel if it exists
-                    if hasattr(self, 'virtual_panel') and self.virtual_panel and self.virtual_panel.winfo_exists():
-                        self.virtual_panel.load_config_visual("Initial_State")
-                else:
-                    print("SCRAM: Failed to load Initial_State")
-                    if hasattr(self, 'state_label'):
-                        self.state_label.config(text="State: EMERGENCY STOP")
-        except Exception as e:
-            print(f"SCRAM: Error loading Initial_State after emergency stop: {e}")
+        # Reset state label
         if hasattr(self, 'state_label'):
             self.state_label.config(text="State: EMERGENCY STOP")
         
@@ -2197,7 +2220,7 @@ class SABREGUI(tk.Frame):
                 winsound.Beep(2000, 100)
                 winsound.Beep(1500, 100)
                 winsound.Beep(1000, 100)
-            except Exception as e:
+                except Exception as e:
                 print(f"Audio alert error: {e}")
         
     def send_daq_signals(self, dio_states):
@@ -2207,15 +2230,12 @@ class SABREGUI(tk.Frame):
         
     def set_controls_state(self, state_name):
         """Set the controls state display"""
-        if hasattr(self, 'state_display_label'):
-            self.state_display_label.config(text=f"State: {state_name}")
-        # Keep the old variable for backward compatibility
         if hasattr(self, 'controls_state_var'):
             self.controls_state_var.set(f"State: {state_name}")
             
     def _ensure_entries_exist(self):
         """Ensure all required entries exist in the entries dictionary to prevent KeyError"""
-        required_keys = ["Activation Time", "Temperature", "Flow Rate", "Pressure", "Bubbling Time", "Magnetic Field"]
+        required_keys = ["Temperature", "Flow Rate", "Pressure", "Bubbling Time", "Magnetic Field"]
         
         # Create dummy entries if they don't exist
         for key in required_keys:
@@ -2241,8 +2261,30 @@ class SABREGUI(tk.Frame):
         # Don't pack dummy_frame
 
     def on_preset_selected_auto_fill(self, event=None):
-        """Auto-fill all parameters when a preset is selected - delegate to preset controller"""
-        self.preset_controller.on_preset_selected_auto_fill(event)
+        """Auto-fill all parameters when a preset is selected"""
+        try:
+            selected_preset = self.selected_preset_var.get()
+            if not selected_preset or selected_preset == "Select a method preset...":
+                return
+                
+            # Load preset data from file
+            preset_file = os.path.join(PRESETS_DIR, f"{selected_preset}.json")
+            if os.path.exists(preset_file):
+                with open(preset_file, 'r') as f:
+                    preset_data = json.load(f)
+                    
+                # Store the preset data
+                self.current_preset_data = preset_data
+                
+                # Auto-fill parameters in both Main and Advanced tabs
+                self._auto_fill_parameters(preset_data)
+                
+                print(f"Loaded and applied preset: {selected_preset}")
+            else:
+                messagebox.showerror("Error", f"Preset file not found: {selected_preset}")                
+        except Exception as e:
+            print(f"Error loading preset: {e}")
+            messagebox.showerror("Error", f"Failed to load preset: {e}")
 
     def _auto_fill_parameters(self, preset_data):
         """Auto-fill parameters in both Main and Advanced tabs based on preset data"""
@@ -2282,6 +2324,7 @@ class SABREGUI(tk.Frame):
                 for param_name, param_data in preset_data.get('advanced', {}).items():
                     # Map advanced parameter names to entry attributes
                     entry_mapping = {
+                        'Activation Time': 'activation_time_entry',
                         'Injection Time': 'injection_time_entry', 
                         'Valve Control Timing': 'valve_time_entry',
                         'Degassing Time': 'degassing_time_entry',
@@ -2295,7 +2338,7 @@ class SABREGUI(tk.Frame):
                             entry = getattr(self, entry_attr)
                             if hasattr(entry, 'delete') and hasattr(entry, 'insert'):
                                 entry.delete(0, tk.END)
-                                entry.insert(0, str(param_data.get('value', param_data)))
+                                entry.insert(0, str(param_data.get('value', param_data)))            
             # Update polarization method if specified
             if 'polarization_method' in preset_data:
                 method_file = preset_data['polarization_method']
@@ -2385,7 +2428,7 @@ class SABREGUI(tk.Frame):
                 try:
                     # Check if preset_combobox exists before trying to refresh
                     if hasattr(self.preset_manager, 'preset_combobox') and self.preset_manager.preset_combobox is not None:
-                        self.preset_manager.refresh_presets_list()
+                self.preset_manager.refresh_presets_list()
                     else:
                         print("Advanced preset manager combobox not initialized yet")
                 except Exception as e:
@@ -2428,34 +2471,13 @@ class SABREGUI(tk.Frame):
         except Exception as e:
             print(f"Error refreshing method list: {e}")
 
-    def _open_polarization_methods_directory(self):
-        """Open the polarization methods directory in file explorer"""
-        import subprocess
-        import platform
-        
-        directory = r"C:\Users\walsworthlab\Desktop\SABRE Program\config_files_SABRE\PolarizationMethods"
-        
-        try:
-            if platform.system() == "Windows":
-                subprocess.Popen(f'explorer "{directory}"')
-            elif platform.system() == "Darwin":  # macOS
-                subprocess.Popen(["open", directory])
-            else:  # Linux
-                subprocess.Popen(["xdg-open", directory])
-            
-            print(f"Opened directory: {directory}")
-        except Exception as e:
-            print(f"Error opening directory: {e}")
-            messagebox.showerror("Error", f"Could not open directory:\n{directory}\n\nError: {e}")
-
-    # Delegate waveform methods to WaveformController
     def toggle_waveform_plot(self):
         """Toggle waveform plot visibility"""
-        self.waveform_controller.toggle_waveform_plot()
+        self.plot_controller.toggle_waveform_plot()
 
     def _plot_waveform_buffer(self, buf, sr):
         """Plot waveform buffer for preview"""
-        self.waveform_controller.plot_waveform_buffer(buf, sr)
+        self.plot_controller.plot_waveform_buffer(buf, sr)
 
     def _compute_polarization_duration(self):
         """Compute polarization duration"""
@@ -2463,383 +2485,172 @@ class SABREGUI(tk.Frame):
 
     def reset_waveform_plot(self):
         """Reset waveform plot"""
-        self.waveform_controller.reset_waveform_plot()
+        self.plot_controller.reset_waveform_plot()
 
-    def _refresh_live_waveform(self):
-        """Refresh the live waveform plot - delegate to waveform controller"""
-        self.waveform_controller.refresh_live_waveform()
 
-    def _force_waveform_update(self):
-        """Force an immediate waveform plot update - delegate to waveform controller"""
-        self.waveform_controller.force_waveform_update()
         
-    # Delegate countdown methods to CountdownController  
+    # Timer functionality (SLIC_Control.py implementation)
     def start_countdown(self, duration_s):
-        """Start countdown timer - delegate to countdown controller"""
-        self.countdown_controller.start_countdown(duration_s)
+        """Start countdown timer for given duration in seconds"""
+        if not hasattr(self, 'countdown_label'):
+            print("Timer label not initialized yet")
+            return
+            
+        self.countdown_end_time = time.time() + duration_s
+        self.countdown_running = True
+        self.update_countdown()
+        print(f"Countdown started for {duration_s} seconds")
 
     def update_countdown(self):
-        """Update countdown display - delegate to countdown controller"""
-        self.countdown_controller.update_countdown()
+        """Update countdown display every millisecond"""
+        if not self.countdown_running:
+            return
+            
+        remaining = max(0.0, self.countdown_end_time - time.time()) if self.countdown_end_time else 0.0
+        
+        if remaining > 0:
+        minutes = int(remaining // 60)
+        seconds = int(remaining % 60)
+        milliseconds = int((remaining % 1) * 1000)
+            
+            if hasattr(self, 'countdown_label') and self.countdown_label is not None:
+                self.countdown_label.config(
+                    text=f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+                )
+            
+            self.after_id = self.after(1, self.update_countdown)
+        else:
+            if hasattr(self, 'countdown_label') and self.countdown_label is not None:
+                self.countdown_label.config(text="00:00.000")
+            self.countdown_running = False
+            print("Countdown completed")
 
     def stop_countdown(self):
-        """Stop countdown timer - delegate to countdown controller"""
-        self.countdown_controller.stop_countdown()
+        """Stop the countdown timer"""
+        self.countdown_running = False
+        if self.after_id:
+            self.after_cancel(self.after_id)
+            self.after_id = None
+        if hasattr(self, 'countdown_label') and self.countdown_label is not None:
+            self.countdown_label.config(text="00:00.000")
+        print("Countdown stopped")
         
-    # Legacy method compatibility - redirect to countdown controller
+    # Legacy method compatibility - redirect to new timer
     def start_timer(self, total_seconds):
         """Legacy method - redirect to countdown"""
-        self.countdown_controller.start_countdown(total_seconds)
+        self.start_countdown(total_seconds)
         
     def stop_timer(self):
         """Legacy method - redirect to countdown"""
-        self.countdown_controller.stop_countdown()
+        self.stop_countdown()
         
     def reset_timer(self):
         """Legacy method - redirect to countdown"""
-        self.countdown_controller.stop_countdown()
+        self.stop_countdown()
         
     def start_countdown_timer(self, duration_seconds):
         """Legacy method - redirect to countdown"""
-        self.countdown_controller.start_countdown(duration_seconds)
+        self.start_countdown(duration_seconds)
         
     def stop_countdown_timer(self):
         """Legacy method - redirect to countdown"""
-        self.countdown_controller.stop_countdown()
+        self.stop_countdown()
+        
+    def _refresh_live_waveform(self):
+        """Refresh the live waveform plot"""
+        try:
+            if not hasattr(self, 'polarization_method_file') or not self.polarization_method_file:
+                return
+                
+            with open(self.polarization_method_file, 'r') as f:
+                cfg = json.load(f)
+                
+            # Build the waveform buffer
+            if isinstance(cfg, dict) and cfg.get("type") == "SLIC_sequence":
+                buf, sr = build_composite_waveform(cfg)
+            else:
+                initial_voltage = cfg.get("initial_voltage", 0.0)
+                buf, sr = build_composite_waveform(cfg["ramp_sequences"], dc_offset=initial_voltage)
+            
+            # Clear and re-plot using plot controller
+            if hasattr(self, 'plot_controller') and self.plot_controller:
+                self.plot_controller.plot_waveform_buffer(buf, sr)
+                print(f"Waveform plot updated: {len(buf)} samples, {buf.max():.3f}V max, {buf.min():.3f}V min")
+            
+            # Force canvas update if we have direct access to it
+            if hasattr(self, 'main_canvas') and self.main_canvas:
+                self.main_canvas.draw_idle()
+                self.main_canvas.flush_events()
+                
+            # Force GUI update to ensure the plot is refreshed
+            self.update_idletasks()
+            self.after_idle(lambda: self.update())
+                    
+        except Exception as e:
+            print(f"Error refreshing live waveform: {e}")
+            
+    def _force_waveform_update(self):
+        """Force an immediate waveform plot update with enhanced refresh"""
+        try:
+            # Call the standard refresh method
+            self._refresh_live_waveform()
+            
+            # Additional forced updates to ensure visibility across tabs
+            if hasattr(self, 'plot_controller') and self.plot_controller:
+                if hasattr(self.plot_controller, 'main_canvas') and self.plot_controller.main_canvas:
+                    # Force multiple canvas refresh operations
+                    self.plot_controller.main_canvas.draw()
+                    self.plot_controller.main_canvas.draw_idle()
+                    self.after(10, lambda: self.plot_controller.main_canvas.draw())
+                    
+            # Force GUI refresh
+            self.update_idletasks()
+            self.update()
+            
+            print("Force waveform update completed")
+            
+        except Exception as e:
+            print(f"Error in force waveform update: {e}")
 
-    def apply_theme(self, theme_name):
-        """Apply a theme to the application"""
-        if hasattr(self, 'theme_manager'):
-            self.theme_manager.apply_theme(theme_name)
-            self.theme_var.set(theme_name)  # Update the theme variable
-            
-            # Also apply theme to any detached windows
-            self._apply_theme_to_detached_windows(theme_name)
-        else:
-            print("Theme manager not available")
-            
-    def _apply_theme_to_detached_windows(self, theme_name):
-        """Apply theme to any detached windows"""
-        try:
-            colors = self.theme_manager.get_theme_colors(theme_name)
-            
-            # List of possible detached window attributes
-            detached_attrs = [
-                '_detached_main', '_detached_advanced_parameters', 
-                '_detached_testing', '_detached_slic_control', 
-                '_detached_percent_polarization_calc'
-            ]
-            
-            for attr in detached_attrs:
-                if hasattr(self, attr):
-                    window = getattr(self, attr)
-                    if window and window.winfo_exists():
-                        # Apply theme to the detached window
-                        window.configure(bg=colors["bg"])
-                        self.theme_manager._apply_theme_recursive(window, colors)
-                        
-        except Exception as e:
-            print(f"Error applying theme to detached windows: {e}")
-            
     def sync_widget_values(self, src_frame, clone_frame):
-        """Delegate to widget synchronizer"""
-        self.widget_synchronizer.sync_widget_values(src_frame, clone_frame)
-            
-    def _add_virtual_testing_tooltips(self, virtual_panel):
-        """Delegate to tooltip manager"""
-        self.tooltip_manager.add_virtual_testing_tooltips(virtual_panel)
-            
-    def _add_full_flow_tooltips(self, full_flow_panel):
-        """Delegate to tooltip manager"""
-        self.tooltip_manager.add_full_flow_tooltips(full_flow_panel)
-            
-    def _add_analog_input_tooltips(self, ai_panel):
-        """Delegate to tooltip manager"""
-        self.tooltip_manager.add_analog_input_tooltips(ai_panel)
-            
-    def _add_analog_output_tooltips(self, ao_panel):
-        """Delegate to tooltip manager"""
-        self.tooltip_manager.add_analog_output_tooltips(ao_panel)
-            
-    def _add_slic_control_tooltips(self, slic_panel):
-        """Add comprehensive tooltips to SLIC Control components using the provided definitions"""
+        """Recursively sync widget values between original and clone frames"""
         try:
-            # Add tooltips to SLIC parameter controls only (no main panel tooltip)
-            self._add_slic_parameter_tooltips(slic_panel)
+            src_children = src_frame.winfo_children()
+            clone_children = clone_frame.winfo_children()
             
-        except Exception as e:
-            print(f"Error adding SLIC control tooltips: {e}")
-            
-    def _add_slic_parameter_tooltips(self, slic_panel):
-        """Add tooltips to SLIC parameter controls with scientific definitions"""
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            
-            # Recursively search for parameter widgets and add appropriate tooltips
-            for child in slic_panel.winfo_children():
-                self._add_slic_tooltips_recursive(child)
-                
-        except Exception as e:
-            print(f"Error adding SLIC parameter tooltips: {e}")
-            
-    def _add_slic_tooltips_recursive(self, widget):
-        """Recursively add tooltips to SLIC widgets based on their labels or names"""
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            
-            # Check if this widget has text that matches SLIC parameters
-            widget_text = ""
-            try:
-                if hasattr(widget, 'cget'):
-                    widget_text = widget.cget('text')
-            except:
-                pass
+            for src_widget, clone_widget in zip(src_children, clone_children):
+                # Sync Entry widgets
+                if isinstance(src_widget, tk.Entry) and isinstance(clone_widget, tk.Entry):
+                    def sync_entry(var_name, index, mode, src=src_widget, clone=clone_widget):
+                        try:
+                            if src.get() != clone.get():
+                                clone.delete(0, tk.END)
+                                clone.insert(0, src.get())
+                        except:
+                            pass
                     
-            # For Entry widgets, find the specific associated label using grid position
-            if isinstance(widget, (tk.Entry, ttk.Entry)):
-                tooltip_text = self._find_associated_label_tooltip_slic(widget)
-                if tooltip_text:
-                    ToolTip(widget, tooltip_text + "\n\nEnter numerical value for this parameter.", parent=self)
-            
-            # Handle labels and buttons with text
-            elif widget_text:
-                tooltip_text = self._get_slic_tooltip_for_parameter(widget_text)
-                if tooltip_text:
-                    ToolTip(widget, tooltip_text, parent=self)
+                    src_var = tk.StringVar()
+                    src_var.trace_add("write", sync_entry)
+                    src_widget.config(textvariable=src_var)
                     
-                # Add tooltips for common button types
-                elif isinstance(widget, (tk.Button, ttk.Button)):
-                    button_text = widget_text.lower()
-                    if "generate" in button_text:
-                        ToolTip(widget, 
-                               "GENERATE SEQUENCE: Create SLIC waveform from parameters.\n"
-                               "• Builds the complete magnetic field sequence\n"
-                               "• Combines all pulses and timing elements\n"
-                               "• Validates parameters before generation\n"
-                               "• Creates optimized waveform for DAQ output", 
-                               parent=self)
-                    elif "send" in button_text or "start" in button_text:
-                        ToolTip(widget, 
-                               "SEND SEQUENCE: Output the generated waveform to hardware.\n"
-                               "• Sends waveform to the specified AO channel\n"
-                               "• Applies the magnetic field sequence to sample\n"
-                               "• Monitor field output during execution\n"
-                               "• Use for actual polarization experiments", 
-                               parent=self)
-                    elif "stop" in button_text:
-                        ToolTip(widget, 
-                               "STOP SEQUENCE: Halt waveform output immediately.\n"
-                               "• Emergency stop for magnetic field output\n"
-                               "• Sets output voltage to 0V safely\n"
-                               "• Use if sequence needs to be interrupted\n"
-                               "• Preserves DAQ hardware from damage", 
-                               parent=self)
-                    elif "plot" in button_text or "view" in button_text or "look" in button_text:
-                        ToolTip(widget, 
-                               "PLOT WAVEFORM: Visualize the generated sequence.\n"
-                               "• Shows voltage vs time for the complete sequence\n"
-                               "• Verify waveform before sending to hardware\n"
-                               "• Check for timing and amplitude accuracy\n"
-                               "• Useful for sequence optimization", 
-                               parent=self)
+                # Sync Combobox widgets
+                elif isinstance(src_widget, ttk.Combobox) and isinstance(clone_widget, ttk.Combobox):
+                    def sync_combo(var_name, index, mode, src=src_widget, clone=clone_widget):
+                        try:
+                            if src.get() != clone.get():
+                                clone.set(src.get())
+                        except:
+                            pass
                     
-            # Recursively process child widgets
-            for child in widget.winfo_children():
-                self._add_slic_tooltips_recursive(child)
+                    if hasattr(src_widget, 'textvariable') and src_widget['textvariable']:
+                        src_widget['textvariable'].trace_add("write", sync_combo)
                 
-        except Exception as e:
-            print(f"Error in SLIC recursive tooltips: {e}")
-    
-    def _get_slic_tooltip_for_parameter(self, text):
-        """Get tooltip text for SLIC parameters based on text content"""
-        text_lower = text.lower()
-        
-        if "coilcalibration" in text_lower or "coil calibration" in text_lower:
-            return "coilcalibration (µT/V): Conversion factor from DAQ output voltage to the B₁ field produced by the drive coil."
-        elif "b1_slic" in text_lower or "b1 slic" in text_lower:
-            return "B1_SLIC (µT): Target B₁ amplitude used during the SLIC spin-lock period."
-        elif "f_slic" in text_lower or "frequency" in text_lower:
-            return "f_SLIC (Hz): Spin-lock (SLIC) carrier frequency applied to match the heteronuclear J-coupling or desired offset."
-        elif "timeslic" in text_lower or "slic duration" in text_lower:
-            return "TimeSLIC_approx (s): Approximate duration of the SLIC spin-lock block delivered each scan."
-        elif "df" in text_lower or "detuning" in text_lower:
-            return "df (Hz): Frequency detuning or sweep width applied around fₛₗᵢc to achieve adiabatic passage."
-        elif "length90pulse" in text_lower or "90 pulse" in text_lower:
-            return "Length90Pulse (s): Duration of the 90° excitation pulse preceding the SLIC block."
-        elif "b1_pulse" in text_lower or "pulse amplitude" in text_lower:
-            return "B1_Pulse (µT): B₁ amplitude for that 90° pulse."
-        elif "sample_rate" in text_lower or "sampling rate" in text_lower:
-            return "sample_rate (Sa/s): Digital sampling rate used when synthesising the analogue waveform."
-        elif "ao_channel" in text_lower or "output channel" in text_lower:
-            return "ao_channel: Designated NI-DAQ analogue-output channel (e.g., \"ao1\") that delivers the generated waveform."
-        
-        return None
-    
-    def _find_associated_label_tooltip_slic(self, entry_widget):
-        """Find the specific label associated with an Entry widget in SLIC Control using grid position"""
-        try:
-            if not hasattr(entry_widget, 'master') or not entry_widget.master:
-                return None
-                
-            # Get the grid info for the entry widget
-            entry_grid_info = entry_widget.grid_info()
-            if not entry_grid_info:
-                return None
-                
-            entry_row = entry_grid_info.get('row')
-            entry_col = entry_grid_info.get('column')
-            
-            # In SLIC Control, labels are in column 0, entries in column 1
-            if entry_col == 1:  # This is an entry widget
-                # Look for a label in the same row, column 0
-                for sibling in entry_widget.master.winfo_children():
-                    if isinstance(sibling, (tk.Label, ttk.Label)):
-                        sibling_grid_info = sibling.grid_info()
-                        if (sibling_grid_info and 
-                            sibling_grid_info.get('row') == entry_row and 
-                            sibling_grid_info.get('column') == 0):
-                            try:
-                                label_text = sibling.cget('text')
-                                return self._get_slic_tooltip_for_parameter(label_text)
-                            except:
-                                continue
-            
-        except Exception as e:
-            print(f"Error finding SLIC label tooltip: {e}")
-        
-        return None
-            
-    def _add_polarization_calc_tooltips(self, pol_panel):
-        """Add comprehensive tooltips to Polarization Calculator components"""
-        try:
-            # Add tooltips to polarization calculator parameters only (no main panel tooltip)
-            self._add_polarization_parameter_tooltips(pol_panel)
-            
-        except Exception as e:
-            print(f"Error adding polarization calculator tooltips: {e}")
-            
-    def _add_polarization_parameter_tooltips(self, pol_panel):
-        """Add tooltips to polarization calculator parameters using provided definitions"""
-        try:
-            from Nested_Programs.ToolTip import ToolTip
-            
-            # Recursively search for parameter widgets
-            for child in pol_panel.winfo_children():
-                self._add_polarization_tooltips_recursive(child)
-                
-        except Exception as e:
-            print(f"Error adding polarization parameter tooltips: {e}")
-            
-    def _add_polarization_tooltips_recursive(self, widget):
-        """Recursively add tooltips to polarization calculator widgets"""
-        # Temporarily commented out due to syntax issues
-        pass
-        # try:
-        #     from Nested_Programs.ToolTip import ToolTip
-        #     
-        #     # Get widget text for identification
-        #     widget_text = ""
-        #     try:
-        #         if hasattr(widget, 'cget'):
-        #             widget_text = widget.cget('text')
-        #     except:
-        #         pass
-        #         
-        #     # For Entry widgets, find the specific associated label using grid position
-        #     if isinstance(widget, (tk.Entry, ttk.Entry)):
-        #         tooltip_text = self._find_associated_label_tooltip_polarization(widget)
-        #         if tooltip_text:
-        #             ToolTip(widget, tooltip_text + "\n\nEnter numerical value for this parameter.", parent=self)
-        #     
-        #     # Handle labels and buttons with text
-        #     elif widget_text:
-        #         tooltip_text = self._get_polarization_tooltip_for_parameter(widget_text)
-        #         if tooltip_text:
-        #             ToolTip(widget, tooltip_text, parent=self)
-        #         
-        #         # Add tooltips for buttons and controls
-        #         elif isinstance(widget, (tk.Button, ttk.Button)):
-        #             button_text = widget_text.lower()
-        #             if "calculate" in button_text or "compute" in button_text:
-        #                 ToolTip(widget, 
-        #                        "CALCULATE: Compute polarization from input data.", 
-        #                        parent=self)
-        #         
-        #     # Recursively process child widgets
-        #     for child in widget.winfo_children():
-        #         self._add_polarization_tooltips_recursive(child)
-        #         
-        # except Exception as e:
-        #     print(f"Error in polarization recursive tooltips: {e}")
-    
-    def _get_polarization_tooltip_for_parameter(self, text):
-        """Get tooltip text for polarization calculator parameters based on text content"""
-        text_lower = text.lower()
-        
-        # Support both Unicode and ASCII representations
-        if "ħ" in text or "hbar" in text_lower or "planck" in text_lower or "ℏ" in text:
-            return "ħ (J·s): Planck's reduced constant, the fundamental quantum of angular momentum used in all magnetic-resonance calculations."
-        elif "γ" in text or "gamma" in text_lower or "gyromagnetic" in text_lower:
-            return "γ (rad s⁻¹ T⁻¹): Gyromagnetic ratio of the observed nucleus, linking magnetic-field strength to its Larmor precession rate."
-        elif "b₀" in text_lower or "b0" in text_lower or "static field" in text_lower:
-            return "B₀ (T): Static magnetic-field magnitude at which the sample is polarized and detected."
-        elif "kᴮ" in text or "k_b" in text_lower or "kb" in text_lower or "boltzmann" in text_lower:
-            return "kᴮ (J K⁻¹): Boltzmann's constant, relating thermal energy to temperature for population-difference estimates."
-        elif "sa ratio" in text_lower or "signal ratio" in text_lower:
-            return "SA ratio: Ratio of the integrated NMR signal areas (or amplitudes) used to normalise bound vs reference signals."
-        elif "temperature" in text_lower or "t (k)" in text_lower:
-            return "T (K): Absolute temperature of the sample during acquisition or calculation."
-        elif "conc_ref" in text_lower or "reference concentration" in text_lower:
-            return "Conc_ref: Molar concentration of the reference species whose signal calibrates the measurement."
-        elif "conc_free" in text_lower or "free concentration" in text_lower:
-            return "Conc_free: Concentration of the analyte in its free (unbound) state."
-        elif "conc_bound" in text_lower or "bound concentration" in text_lower:
-            return "Conc_bound: Concentration of the analyte bound to its binding partner or catalyst."
-        elif "signal_ref" in text_lower or "reference signal" in text_lower:
-            return "Signal_ref: Measured NMR signal intensity (or area) for the reference compound."
-        elif "signal_free" in text_lower or "free signal" in text_lower:
-            return "Signal_free: Integrated NMR signal (peak area or amplitude) arising from the analyte molecules that remain freely dissolved in solution after SABRE, quantifying their hyper-polarization level independent of catalyst binding."
-        elif "signal_bound" in text_lower or "bound signal" in text_lower:
-            return "Signal_bound: Integrated NMR signal originating from analyte molecules transiently bound to the SABRE catalyst complex, reflecting the polarization achieved in the bound state and used to gauge catalyst-mediated transfer efficiency."
-        elif "x-axis" in text_lower or "axis label" in text_lower:
-            return "X-axis label: User-defined text that will appear on the plot's horizontal axis."
-        
-        return None
-    
-    def _find_associated_label_tooltip_polarization(self, entry_widget):
-        """Find the specific label associated with an Entry widget in Polarization Calculator using grid position"""
-        try:
-            if not hasattr(entry_widget, 'master') or not entry_widget.master:
-                return None
-                
-            # Get the grid info for the entry widget
-            entry_grid_info = entry_widget.grid_info()
-            if not entry_grid_info:
-                return None
-                
-            entry_row = entry_grid_info.get('row')
-            entry_col = entry_grid_info.get('column')
-            
-            # In Polarization Calculator, labels are in even columns, entries in odd columns
-            if entry_col is not None and entry_col % 2 == 1:  # This is an entry widget (odd column)
-                # Look for a label in the same row, previous column (even column)
-                label_col = entry_col - 1
-                for sibling in entry_widget.master.winfo_children():
-                    if isinstance(sibling, (tk.Label, ttk.Label)):
-                        sibling_grid_info = sibling.grid_info()
-                        if (sibling_grid_info and 
-                            sibling_grid_info.get('row') == entry_row and 
-                            sibling_grid_info.get('column') == label_col):
-                            try:
-                                label_text = sibling.cget('text')
-                                return self._get_polarization_tooltip_for_parameter(label_text)
-                            except:
-                                continue
+                # Recursively process child widgets
+                if src_widget.winfo_children() and clone_widget.winfo_children():
+                    self.sync_widget_values(src_widget, clone_widget)
                     
         except Exception as e:
-            print(f"Error finding polarization label tooltip: {e}")
-        
-        return None
+            print(f"Error syncing widget values: {e}")
             
 # ------------- Main Application Entry Point -------------
 if __name__ == "__main__":
@@ -2847,24 +2658,6 @@ if __name__ == "__main__":
     root = tk.Tk()
     root.title("SABRE Control System - Modular Architecture")
     root.geometry("1200x800")
-    
-    # Set the application icon
-    try:
-        from PIL import Image, ImageTk
-        icon_path = r"C:\Users\walsworthlab\Desktop\SABRE Program\SABREAppICON.png"
-        if os.path.exists(icon_path):
-            icon_image = Image.open(icon_path)
-            # Resize icon to appropriate size for window icon (32x32 is standard)
-            icon_image = icon_image.resize((32, 32), Image.Resampling.LANCZOS)
-            icon_photo = ImageTk.PhotoImage(icon_image)
-            root.iconphoto(True, icon_photo)
-            print(f"Application icon set successfully: {icon_path}")
-        else:
-            print(f"Icon file not found: {icon_path}")
-    except ImportError:
-        print("PIL/Pillow not available - icon not set")
-    except Exception as e:
-        print(f"Error setting application icon: {e}")
     
     print("Root window created...")
     style = ttk.Style()
