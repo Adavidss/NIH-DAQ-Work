@@ -1,0 +1,12 @@
+# Polarization Calculator Dataset
+# Constants
+hbar,1.054561e-34
+gamma,67280000
+B0,1.1
+kB,1.380649e-23
+sa_ratio,1.03
+T,278.0
+conc_ref,1
+conc_free,1
+conc_bound,1
+signal_ref,1

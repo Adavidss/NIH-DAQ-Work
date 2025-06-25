@@ -1,0 +1,58 @@
+{
+    "metadata": {
+        "type": "Polarization Calculator Dataset",
+        "version": "1.0"
+    },
+    "constants": {
+        "hbar": "1.054561e-34",
+        "gamma": "67280000",
+        "B0": "1.1",
+        "kB": "1.380649e-23",
+        "sa_ratio": "1.03",
+        "T": "278.0",
+        "conc_ref": "10.2",
+        "conc_free": "0.024",
+        "conc_bound": "0.006",
+        "signal_ref": "0.26",
+        "x_label": "Bubbling Time"
+    },
+    "dataset_notes": "Did 60 sccm (not the big effect on this system). Changed bubbling / buildup times. Should see highest % at 200 + seconds which is not observed at all for this system. Something definitely wrong, possibly not deuterated but up for debate.",
+    "data_points": [
+        {
+            "X": "100.000",
+            "Signal_free": "3.100",
+            "Signal_bound": "0.800",
+            "note": ""
+        },
+        {
+            "X": "50.000",
+            "Signal_free": "2.700",
+            "Signal_bound": "0.500",
+            "note": ""
+        },
+        {
+            "X": "150.000",
+            "Signal_free": "2.900",
+            "Signal_bound": "0.600",
+            "note": ""
+        },
+        {
+            "X": "150.000",
+            "Signal_free": "2.900",
+            "Signal_bound": "0.600",
+            "note": ""
+        },
+        {
+            "X": "200.000",
+            "Signal_free": "2.800",
+            "Signal_bound": "0.600",
+            "note": ""
+        },
+        {
+            "X": "200.000",
+            "Signal_free": "2.500",
+            "Signal_bound": "0.500",
+            "note": ""
+        }
+    ]
+}

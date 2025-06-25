@@ -1,0 +1,82 @@
+{
+    "metadata": {
+        "type": "Polarization Calculator Dataset",
+        "version": "1.0"
+    },
+    "constants": {
+        "hbar": "1.054561e-34",
+        "gamma": "67280000",
+        "B0": "1.1",
+        "kB": "1.380649e-23",
+        "sa_ratio": "1.03",
+        "T": "278.0",
+        "conc_ref": "10.2",
+        "conc_free": "0.024",
+        "conc_bound": "0.006",
+        "signal_ref": "0.26",
+        "x_label": "B1_SLIC"
+    },
+    "dataset_notes": "Did all of this at 50 seconds since longer times did not impact the system (odd result). Testing here B1_SLIC, if deuterated % should fall off fast after 1.8 uT. Did 4 min wait times (to see if fully require). Believe it is the \"Deuterated\" compound due to the new impurity not seen in the other compound.\n\nPossibility iS that the program cannot output 535.25 Hz exactly so cannot build on resonance.\n\nMight be affecting the C2 carbon more so / looking at it.\n\nWould be good to get a standard for knowing that system is setup correctly. Maybe concentration determinations as they did in the paper.\n\nFuture test to make sure that setup is good electronics wise.",
+    "data_points": [
+        {
+            "X": "1.800",
+            "Signal_free": "2.100",
+            "Signal_bound": "0.400",
+            "note": ""
+        },
+        {
+            "X": "1.700",
+            "Signal_free": "2.000",
+            "Signal_bound": "0.400",
+            "note": ""
+        },
+        {
+            "X": "2.000",
+            "Signal_free": "2.300",
+            "Signal_bound": "0.400",
+            "note": ""
+        },
+        {
+            "X": "2.000",
+            "Signal_free": "2.300",
+            "Signal_bound": "0.400",
+            "note": ""
+        },
+        {
+            "X": "2.200",
+            "Signal_free": "2.500",
+            "Signal_bound": "0.500",
+            "note": ""
+        },
+        {
+            "X": "2.400",
+            "Signal_free": "2.900",
+            "Signal_bound": "0.600",
+            "note": ""
+        },
+        {
+            "X": "2.700",
+            "Signal_free": "3.300",
+            "Signal_bound": "0.600",
+            "note": ""
+        },
+        {
+            "X": "3.000",
+            "Signal_free": "3.500",
+            "Signal_bound": "0.700",
+            "note": ""
+        },
+        {
+            "X": "3.500",
+            "Signal_free": "3.800",
+            "Signal_bound": "0.700",
+            "note": ""
+        },
+        {
+            "X": "4.000",
+            "Signal_free": "3.700",
+            "Signal_bound": "0.600",
+            "note": ""
+        }
+    ]
+}

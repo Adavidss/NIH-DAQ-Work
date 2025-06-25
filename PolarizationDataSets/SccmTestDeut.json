@@ -1,0 +1,46 @@
+{
+    "metadata": {
+        "type": "Polarization Calculator Dataset",
+        "version": "1.0"
+    },
+    "constants": {
+        "hbar": "1.054561e-34",
+        "gamma": "67280000",
+        "B0": "1.1",
+        "kB": "1.380649e-23",
+        "sa_ratio": "1.03",
+        "T": "278.0",
+        "conc_ref": "10.2",
+        "conc_free": "0.024",
+        "conc_bound": "0.006",
+        "signal_ref": "0.26",
+        "x_label": "Sccm"
+    },
+    "dataset_notes": "Quick Data at 90, 60, 30 sccm H, 110 psi, sample comp same as paper but with slightly wet deuterated catatlyst which might mess some things up. Testing 50 second at these times to see effect of the bubbling rate. Will do a test x2 on the first one to see if 1 min relaxation time is appropriate or not.\n\nThe results of the test: Need 3-4 min relaxation since the T1 is so high. Did ~4 min relaxation for rest.",
+    "data_points": [
+        {
+            "X": "90.000",
+            "Signal_free": "1.900",
+            "Signal_bound": "0.500",
+            "note": ""
+        },
+        {
+            "X": "90.000",
+            "Signal_free": "2.300",
+            "Signal_bound": "0.600",
+            "note": ""
+        },
+        {
+            "X": "60.000",
+            "Signal_free": "2.200",
+            "Signal_bound": "0.500",
+            "note": ""
+        },
+        {
+            "X": "30.000",
+            "Signal_free": "1.200",
+            "Signal_bound": "0.300",
+            "note": ""
+        }
+    ]
+}
