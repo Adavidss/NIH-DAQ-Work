@@ -1,0 +1,71 @@
+{
+    "general": {
+        "Magnetic Field": {
+            "value": "1",
+            "unit": "T"
+        },
+        "Temperature": {
+            "value": "1",
+            "unit": "K"
+        },
+        "Flow Rate": {
+            "value": "1",
+            "unit": "sccm"
+        },
+        "Pressure": {
+            "value": "1",
+            "unit": "psi"
+        },
+        "Valve Control Timing": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Activation Time": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Degassing Time": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Injection Time": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Transfer Time": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Recycle Time": {
+            "value": "1",
+            "unit": "sec"
+        }
+    },
+    "advanced": {
+        "Valve Control Timing": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Activation Time": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Degassing Time": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Injection Time": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Transfer Time": {
+            "value": "1",
+            "unit": "sec"
+        },
+        "Recycle Time": {
+            "value": "1",
+            "unit": "sec"
+        }
+    },
+    "polarization_method": "C:/Users/walsworthlab/Desktop/SABRE Program/config_files_SABRE/PolarizationMethods/SLIC3.json"
+}

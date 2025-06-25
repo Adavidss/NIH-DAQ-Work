@@ -1,0 +1,75 @@
+{
+    "general": {
+        "Bubbling Time": {
+            "value": "30",
+            "unit": "sec"
+        },
+        "Magnetic Field": {
+            "value": "6.5",
+            "unit": "mT"
+        },
+        "Temperature": {
+            "value": "298",
+            "unit": "K"
+        },
+        "Flow Rate": {
+            "value": "50",
+            "unit": "sccm"
+        },
+        "Pressure": {
+            "value": "3.5",
+            "unit": "bar"
+        },
+        "Valve Control Timing": {
+            "value": "0.4",
+            "unit": "sec"
+        },
+        "Activation Time": {
+            "value": "120",
+            "unit": "sec"
+        },
+        "Degassing Time": {
+            "value": "60",
+            "unit": "sec"
+        },
+        "Injection Time": {
+            "value": "15",
+            "unit": "sec"
+        },
+        "Transfer Time": {
+            "value": "5",
+            "unit": "sec"
+        },
+        "Recycle Time": {
+            "value": "30",
+            "unit": "sec"
+        }
+    },
+    "advanced": {
+        "Valve Control Timing": {
+            "value": "0.4",
+            "unit": "sec"
+        },
+        "Activation Time": {
+            "value": "120",
+            "unit": "sec"
+        },
+        "Degassing Time": {
+            "value": "60",
+            "unit": "sec"
+        },
+        "Injection Time": {
+            "value": "15",
+            "unit": "sec"
+        },
+        "Transfer Time": {
+            "value": "5",
+            "unit": "sec"
+        },
+        "Recycle Time": {
+            "value": "30",
+            "unit": "sec"
+        }
+    },
+    "polarization_method": null
+}

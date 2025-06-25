@@ -1,0 +1,51 @@
+{
+    "general": {
+        "Bubbling Time": {
+            "value": "60.0",
+            "unit": "s"
+        },
+        "Magnetic Field": {
+            "value": "150.0",
+            "unit": "mT"
+        },
+        "Temperature": {
+            "value": "250",
+            "unit": "K"
+        },
+        "Flow Rate": {
+            "value": "15",
+            "unit": "sccm"
+        },
+        "Pressure": {
+            "value": "0.8",
+            "unit": "atm"
+        }
+    },
+    "advanced": {
+        "activation_time": {
+            "value": "12.0",
+            "unit": "s"
+        },
+        "injection_time": {
+            "value": "6.0",
+            "unit": "s"
+        },
+        "valve_time": {
+            "value": "2.5",
+            "unit": "s"
+        },
+        "degassing_time": {
+            "value": "18.0",
+            "unit": "s"
+        },
+        "transfer_time": {
+            "value": "9.0",
+            "unit": "s"
+        },
+        "recycle_time": {
+            "value": "14.0",
+            "unit": "s"
+        }
+    },
+    "polarization_method": "low_temp_method.json"
+}
